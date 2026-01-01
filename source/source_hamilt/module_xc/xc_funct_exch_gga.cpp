@@ -94,6 +94,9 @@ double &sx, double &v1x, double &v2x)
     // exchange energy LDA part
     // exchange energy gradient part
     
+    // grho:电子密度梯度的模的平方∣∇ρ∣^2
+ 
+
 	// numerical coefficients (NB: c2=(3 pi^2)^(1/3) )
     const double third = 1.0 / 3.0;
     const double c1 = 0.750 / ModuleBase::PI;
