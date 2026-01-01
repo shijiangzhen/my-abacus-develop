@@ -95,40 +95,218 @@ double &sx, double &v1x, double &v2x)
     // exchange energy gradient part
     
     // grho:电子密度梯度的模的平方∣∇ρ∣^2
- 
+    
 
 	// numerical coefficients (NB: c2=(3 pi^2)^(1/3) )
     const double third = 1.0 / 3.0;
-    const double c1 = 0.750 / ModuleBase::PI;
+    const double c1 = 0.750 / ModuleBase::PI; 
     const double c2 = 3.0936677262801360;
-    const double c5 = 4.0 * third;
+    const double c5 = 4.0 * third; 
     // parameters of the functional
+    // iflag=0: PBE, iflag=1: revised PBE
+    // 对于PBE，k=0.804, mu=0.2195149727645171
     double k[3] = { 0.8040, 1.24500, 0.8040 };
     const double mu[3] = {0.2195149727645171, 0.2195149727645171, 0.12345679012345679} ;//modified by zhengdy, to ensure the same parameters with another dft code.
 
-    const double agrho = sqrt(grho);
-    const double kf = c2 * pow(rho, third);
-    const double dsg = 0.50 / kf;
-    const double s1 = agrho * dsg / rho;
-    const double s2 = s1 * s1;
-    const double ds = - c5 * s1;
+    const double agrho = sqrt(grho); // 密度梯度的模, ∣∇ρ∣
+    const double kf = c2 * pow(rho, third); // 费米波矢, kF=(3π²ρ)^(1/3)
+    const double dsg = 0.50 / kf; // 1/(2*kF), 用于计算无量纲梯度s
+    const double s1 = agrho * dsg / rho; // 无量纲梯度s = ∣∇ρ∣/(2*kF*ρ)
+    const double s2 = s1 * s1; // s的平方
+    const double ds = - c5 * s1; // n*ds/dn，用于后续势的导数，其中 n=ρ（电子密度），见下方推导
+    /*
+    ds = n * ds/dn
+    s = |∇ρ| / (2 * kF * ρ)
+    其中 kF = c2 * ρ^(1/3)
+    s1 = |∇ρ| / (2 * kF * ρ)
+    ds/dn = 对 s 关于 n (即 ρ) 求导
+
+    推导如下：
+    s = |∇ρ| / (2 * kF * ρ)
+        = |∇ρ| / (2 * c2 * ρ^(1/3) * ρ)
+        = |∇ρ| / (2 * c2 * ρ^(4/3))
+
+    令 A = |∇ρ| / (2 * c2)
+    s = A * ρ^(-4/3)
+
+    ds/dρ = A * (-4/3) * ρ^(-7/3)
+
+    n * ds/dn = ρ * ds/dρ = ρ * A * (-4/3) * ρ^(-7/3)
+                        = A * (-4/3) * ρ^(-4/3)
+                        = - (4/3) * s
+
+    所以 ds = - (4.0 / 3.0) * s1;
+    */
+
 
     // Energy
-    const double f1 = s2 * mu[iflag] / k [iflag];
+    const double f1 = s2 * mu[iflag] / k [iflag]; // s^2 * mu / k
     const double f2 = 1.0 + f1;
-    const double f3 = k [iflag] / f2;
-    const double fx = k [iflag] - f3;
-    const double exunif = - c1 * kf;
-    sx = exunif * fx;
+    const double f3 = k [iflag] / f2; // k / (1 + s^2 * mu / k)
+    
+    // PBE中交换能密度的表达式为： ε_x^PBE = ε_x^LDA * F_x(s)
+    // 其中 F_x(s) = 1 + k - k / (1 + s^2 * mu / k)
+    // 这里代码的fx = k - k / (1 + s^2 * mu / k), 
+    // 即交换能的梯度修正部分,比PBE的增强因子少了1（1就是LDA部分），因为LDA部分在后面单独计算
+    const double fx = k [iflag] - f3; 
+    const double exunif = - c1 * kf; // 交换能的LDA部分，推导如下
+    /*
+    exunif 是均匀电子气（LDA）交换能密度的表达式。推导如下：
+
+    1. 均匀电子气的交换能密度（每单位体积）为：
+        ε_x = - (3/4) * (3/π)^{1/3} * ρ^{4/3}
+
+    2. 但在实际计算中，常用的表达式为：
+        ε_x = - (3/4) * (3/π)^{1/3} * ρ^{4/3}
+             = - c1 * kf * ρ
+        其中：
+          c1 = 0.75 / π
+          kf = (3π^2 ρ)^{1/3}  （费米波矢）
+
+    3. 进一步推导：
+        kf = (3π^2 ρ)^{1/3}
+        kf * ρ = (3π^2)^{1/3} * ρ^{4/3}
+        所以：
+        exunif = - c1 * kf
+        但此处 exunif 实际上是每电子的交换能密度（即除以 ρ），
+        所以最终：
+        exunif = - (3/4) * (3/π)^{1/3} * ρ^{1/3}
+                 = - c1 * kf
+
+    4. 代码中：
+        c1 = 0.750 / ModuleBase::PI
+        kf = c2 * pow(rho, 1/3)
+        c2 = (3π^2)^{1/3}
+
+        所以 exunif = - c1 * kf
+    */
+    sx = exunif * fx; // 交换能的梯度修正部分
 
     // Potential
-    const double dxunif = exunif * third;
-    const double dfx1 = f2 * f2;
-    const double dfx = 2.0 * mu[iflag] * s1 / dfx1;
+    const double dxunif = exunif * third; // LDA部分对密度的导数再乘以密度ρ
+    /*
+    dxunif 是 exunif 关于 rho 的导数乘以 rho，即
+        dxunif = rho * d(exunif)/d(rho)
+
+    exunif = -c1 * kf
+    其中 kf = c2 * rho^{1/3}
+    所以 exunif = -c1 * c2 * rho^{1/3}
+
+    对 rho 求导：
+    d(exunif)/d(rho) = -c1 * c2 * d(rho^{1/3})/d(rho)
+                     = -c1 * c2 * (1/3) * rho^{-2/3}
+
+    所以
+    dxunif = rho * d(exunif)/d(rho)
+           = rho * [ -c1 * c2 * (1/3) * rho^{-2/3} ]
+           = -c1 * c2 * (1/3) * rho^{1 - 2/3}
+           = -c1 * c2 * (1/3) * rho^{1/3}
+
+    而 exunif = -c1 * c2 * rho^{1/3}
+    所以 dxunif = exunif * (1/3)
+    即
+        dxunif = exunif * third;
+    */
+
+    const double dfx1 = f2 * f2;// (1 + s^2 * mu / k)^2
+    const double dfx = 2.0 * mu[iflag] * s1 / dfx1; 
+    /*
+    dfx 是 fx=F_x(s) 关于 s 的导数，用于交换势的梯度修正部分,链式法则用于后续求导。
+
+    1. F_x(s) 的表达式：
+        F_x(s) = k - k / (1 + s^2 * mu / k)
+                 = k - k / f2
+        其中 f2 = 1 + s^2 * mu / k
+
+    2. 对 s 求导：
+        令 f2 = 1 + s^2 * mu / k
+        则 F_x(s) = k - k / f2
+
+        dF_x/ds = -k * d(1/f2)/ds
+                  = -k * (-1) * (1/f2^2) * d(f2)/ds
+                  = k * (1/f2^2) * d(f2)/ds
+
+        d(f2)/ds = d(1 + s^2 * mu / k)/ds = 2 * s * mu / k
+
+        所以：
+        dF_x/ds = k * (1/f2^2) * (2 * s * mu / k)
+                  = (2 * s * mu) / f2^2
+
+    3. 所以 dfx = dF_x/ds 
+        dfx = (2 * mu[iflag] * s1 / dfx1)
+        其中 dfx1 = f2^2
+
+    最终：
+        dfx = 2.0 * mu[iflag] * s1 / dfx1;
+    */
+    
     
 	v1x = sx + dxunif * fx + exunif * dfx * ds;
+    /*
+    v1x 是交换能密度关于电子密度 rho 的导数d(sx * rho)/d(rho)，用于交换势的计算。
+    推导如下：
+
+    1. sx = exunif * fx
+        其中 exunif = -c1 * kf
+              kf = c2 * rho^{1/3}
+              fx = k - k / (1 + s^2 * mu / k)
+              s = |∇ρ| / (2 * kF * ρ)
+       又有dxunif = rho * d(exunif)/d(rho)
+       dfx = d(fx)/d(s)
+       ds = n * ds/dn
+              
+    2. 详细链式法则推导：
+        v1x  = d(sx * rho)/d(rho)
+             = d(exunif * fx * rho)/d(rho)
+             = exunif * fx + rho * d(exunif)/d(rho) * fx + rho * exunif * d(fx)/d(rho)
+             = exunif * fx + rho * fx * dxunif/rho  + rho * exunif * d(fx)/ds * ds/d(rho)
+             = exunif * fx + dxunif * fx + rho * exunif * dfx * ds/rho
+             = sx + dxunif * fx + exunif * dfx * ds
+  
+    */
+
     v2x = exunif * dfx * dsg / agrho;
-    sx = sx * rho;
+    /*
+    v2x 是交换能密度关于电子密度梯度模的平方 grho 的导数相关项，用于计算势的梯度修正部分。
+    通常 GGA 势的梯度部分形式为 ∇⋅(∂(ε_x*ρ)/∂(∇ρ))。
+    令 f = ε_x * ρ = exunif * fx * ρ
+    ∂f/∂(grho) = ∂f/∂(∇ρ) * ∂(∇ρ)/∂(grho)
+    由于 grho = |∇ρ|^2, 有 ∂(∇ρ)/∂(grho) = 1/(2*|∇ρ|) = 1/(2*agrho)
+    其中 agrho = |∇ρ| = sqrt(grho)
+    所以  ∂f/∂(grho) = ∂f/∂(∇ρ) * 1/(2*agrho) 
+    这里的v2x 应该是2*∂f/∂(grho) 。
+    
+    需要计算 ∂f/∂(∇ρ)。
+    
+    根据链式法则：
+    ∂f/∂(∇ρ) = ∂f/∂s * ∂s/∂(∇ρ)
+    
+    1. ∂f/∂s
+       f = exunif * fx * ρ
+       exunif 和 ρ 不依赖于 s (s 依赖于 ∇ρ)
+       ∂f/∂s = exunif * ρ * ∂(fx)/∂s
+             = exunif * ρ * dfx
+             
+    2. ∂s/∂(∇ρ)
+       s = |∇ρ| / (2 * kF * ρ)
+       dsg=1 / (2 * kF)
+       
+       ∂s/∂(∇ρ) = [1 / (2 * kF * ρ)] 
+                = dsg / ρ
+                
+    3. 组合
+       ∂f/∂(∇ρ) = (exunif * ρ * dfx) * (dsg / ρ) 
+                = exunif * dfx * dsg 
+                
+    
+    所以：
+    v2x = 2*∂f/∂(grho) 
+        = 2 * (exunif * dfx * dsg) / (2 * agrho)
+        = exunif * dfx * dsg / agrho
+    */
+    
+    // 右边的sx是ϵx，即每个电子的交换能密度，乘以ρ后，sx变成了ρϵ_x，即该空间点上的总交换能密ρ*ϵx
+    sx = sx * rho; // 得到的是每单位体积的交换能密度，用于后续积分得到总交换能
 
 	return;
 }
