@@ -49,8 +49,12 @@ HamiltPW<T, Device>::HamiltPW(elecstate::Potential* pot_in,
             this->ops->add(ekinetic);
         }
     }
+
+    // 哈密顿量的构建采用“注册列表”机制：即将所有需要加入哈密顿量的势能类型（如常规赝势、DFT-1/2等）
+    // 以字符串或对象的形式注册到一个列表中，构建哈密顿量时遍历该列表，依次将各势能项加到总哈密顿量上。
     if (PARAM.inp.vl_in_h)
     {
+        // 动态构建一个 pot_register_in 列表，将所有需要加入哈密顿量的势能类型依次加入列表中
         std::vector<std::string> pot_register_in;
         if (PARAM.inp.vion_in_h)
         {
@@ -75,6 +79,8 @@ HamiltPW<T, Device>::HamiltPW(elecstate::Potential* pot_in,
             pot_register_in.push_back("gatefield");
         }
         // DFT-1/2
+        // 如果输入参数 dfthalf_type 为1（即开启DFT-1/2），就把字符串 "dfthalf" 加入到 pot_register_in 列表，
+        // "dfthalf" 作为标识，后续会被用来查找和调用对应的DFT-1/2势能对象。
         if (PARAM.inp.dfthalf_type == 1) {
             pot_register_in.push_back("dfthalf");
         }
@@ -82,12 +88,17 @@ HamiltPW<T, Device>::HamiltPW(elecstate::Potential* pot_in,
         if(pot_register_in.size()>0)
         {
             //register Potential by gathered operator
+            // 将上述注册列表传递给 Potential 对象，调用其 pot_register 方法，
+            // 让 Potential 对象根据注册列表，准备好所有需要的势能数据（包括DFT-1/2修正势能）。
             pot_in->pot_register(pot_register_in);
             Operator<T, Device>* veff = new Veff<OperatorPW<T, Device>>(isk,
                                                                         pot_in->get_veff_smooth_data<Real>(),
                                                                         pot_in->get_veff_smooth().nr,
                                                                         pot_in->get_veff_smooth().nc,
                                                                         wfc_basis);
+            // 根据注册好的势能，依次创建各类算符对象，并通过 add 方法将它们串联成一个算符链表 this->ops。
+            // 其中，Veff 对象会根据 Potential 中注册的势能类型，自动包含所有相关势能（包括DFT-1/2）。
+            // 后续对波函数的哈密顿量作用就是遍历链表，依次作用所有算符，实现总哈密顿量。
             if(this->ops == nullptr)
             {
                 this->ops = veff;

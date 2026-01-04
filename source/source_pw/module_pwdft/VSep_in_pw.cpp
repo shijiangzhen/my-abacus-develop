@@ -25,6 +25,7 @@ double sphere_cut(double r, double r_out, double r_power)
     {
         return 0.0;
     }
+    // DFT-1/2球形截断函数
     return std::pow(1 - std::pow(r / r_out, r_power), 3);
 }
 
@@ -42,6 +43,7 @@ double shell_cut(double r, double r_in, double r_out, double r_power)
     {
         return 0.0;
     }
+    //shell DFT-1/2球壳形截断函数
     return std::pow(1 - std::pow(2 * (r - r_in) / (r_out - r_in) - 1.0, r_power), 3);
 }
 } // namespace
@@ -50,6 +52,7 @@ VSep::VSep() = default;
 
 VSep::~VSep() = default;
 
+// 读取并处理外部输入的自能势数据，生成G空间的自能势分量，供哈密顿量使用。
 void VSep::init_vsep(const ModulePW::PW_Basis& rho_basis, const Sep_Cell& sep_cell)
 {
     ModuleBase::TITLE("VSep", "init_vsep");
@@ -63,6 +66,7 @@ void VSep::init_vsep(const ModulePW::PW_Basis& rho_basis, const Sep_Cell& sep_ce
     int igl0 = 0;
     for (int it = 0; it < ntype; ++it)
     {
+        // 对每种原子类型，若启用DFT-1/2修正（get_sep_enable()），则读取其自能势参数
         if (!sep_cell.get_sep_enable()[it])
         {
             continue;
@@ -122,6 +126,7 @@ void VSep::init_vsep(const ModulePW::PW_Basis& rho_basis, const Sep_Cell& sep_ce
     ModuleBase::timer::tick("VSep", "init_vsep");
 }
 
+// 将G空间的自能势转换到实空间网格，用于后续的实空间操作或分析
 void VSep::generate_vsep_r(const ModulePW::PW_Basis& rho_basis,
                            const ModuleBase::ComplexMatrix& sf_in,
                            const Sep_Cell& sep_cell)
@@ -129,12 +134,14 @@ void VSep::generate_vsep_r(const ModulePW::PW_Basis& rho_basis,
     ModuleBase::TITLE("VSep", "generate_vsep_r");
     ModuleBase::timer::tick("VSep", "generate_vsep_r");
 
+    //初始化实空间网格点数 nrxx，并分配 vsep_r 存储空间
     this->nrxx = rho_basis.nrxx;
     this->vsep_r.assign(rho_basis.nrxx, 0.0);
 
     std::unique_ptr<std::complex<double>[]> vg(new std::complex<double>[rho_basis.npw]);
     ModuleBase::GlobalFunc::ZEROS(vg.get(), rho_basis.npw);
 
+    //为每个原子类型和每个G点，累加自能势的傅里叶分量（vsep_form(it, ig)）和结构因子（sf_in(it, ig)）的乘积
     for (int it = 0; it < sep_cell.get_ntype(); it++)
     {
         if (!sep_cell.get_sep_enable()[it])
@@ -148,6 +155,7 @@ void VSep::generate_vsep_r(const ModulePW::PW_Basis& rho_basis,
         }
     }
 
+    //调用 recip2real 方法，将G空间的自能势 vg 傅里叶变换到实空间，得到 vsep_r
     rho_basis.recip2real(vg.get(), this->vsep_r.data());
 
     ModuleBase::timer::tick("VSep", "generate_vsep_r");

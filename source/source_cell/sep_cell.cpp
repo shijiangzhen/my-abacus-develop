@@ -71,6 +71,7 @@ int Sep_Cell::read_sep_potentials(std::ifstream& ifpos,
         ss >> atom_label >> enable_tmp;
 
         // Validate atom label
+        // 检查原子顺序是否与 ATOMIC_SPECIES 匹配，确保势能与原子类型对应
         if (atom_label != ucell_atom_label[i])
         {
             GlobalV::ofs_running << "Sep potential and atom order do not match. "
@@ -82,6 +83,7 @@ int Sep_Cell::read_sep_potentials(std::ifstream& ifpos,
         {
             this->seps[i].is_enable = this->sep_enable[i];
             std::string sep_filename;
+            // 对每个使能的原子类型，读取自能势文件名和参数
             ss >> sep_filename;
             ss >> this->seps[i].r_in >> this->seps[i].r_out >> this->seps[i].r_power >> this->seps[i].enhence_a;
             std::string sep_addr = pp_dir + sep_filename;
@@ -91,6 +93,7 @@ int Sep_Cell::read_sep_potentials(std::ifstream& ifpos,
                 GlobalV::ofs_running << "Cannot find sep potential file: " << sep_addr << std::endl;
                 return false;
             }
+            // 读取自能势数据
             this->seps[i].read_sep(sep_ifs);
         }
     }
@@ -99,29 +102,54 @@ int Sep_Cell::read_sep_potentials(std::ifstream& ifpos,
 }
 
 #ifdef __MPI
+// bcast_sep_cell() 的作用是：
+// 在并行计算环境下，将主进程读取到的 DFT-1/2 自能势数据同步到所有进程，保证每个进程都能正确参与后续的自洽计算。
+// 具体流程是：先广播原子类型数，再为每个原子类型广播使能标志和具体自能势数据。
+// 好处是：只需主进程读取和解析输入文件，其他进程通过 MPI 广播获得一致的数据，避免重复IO和解析，提高并行效率和一致性。
+
+// 广播（broadcast）在MPI中指的是：把一份数据从一个进程（通常是主进程，rank 0）发送给所有其他进程，让大家都拥有这份数据。
+// 因为在并行计算中，通常只有主进程负责读取输入文件或生成某些数据。为了让所有进程都能用到这些数据，
+// 就需要把它们“广播”出去。这样可以避免每个进程都去读文件，节省时间和资源，并保证数据一致。
 void Sep_Cell::bcast_sep_cell()
 {
+    // 调用了一个标题输出函数，标记当前正在广播 `Sep_Cell` 数据
     ModuleBase::TITLE("Sep_Cell", "bcast_sep_cell");
+    // 广播原子类型数 `ntype`，确保所有进程都获得一致的原子类型数量。
     Parallel_Common::bcast_int(this->ntype);
 
     if (GlobalV::MY_RANK != 0)
     {
+        // 如果当前进程不是主进程（rank 0），
+        // 则根据广播得到的 `ntype`，分配自能势数据结构 `seps` 和使能标志 `sep_enable` 的空间。
         this->seps.resize(this->ntype);
         this->sep_enable.resize(this->ntype);
     }
+
+    // 对每个原子类型循环
     for (int i = 0; i < this->ntype; ++i)
     {
-        bool tmp = false;
+        bool tmp = false; // 定义临时变量 `tmp`，用于存储当前原子类型的使能标志。
         if (GlobalV::MY_RANK == 0)
         {
+            // 如果是主进程（rank 0），将本地的 `sep_enable[i]` 赋值给 `tmp`。
             tmp = this->sep_enable[i];
         }
-        Parallel_Common::bcast_bool(tmp);
+        Parallel_Common::bcast_bool(tmp);// 将主进程的 `tmp` 广播到所有进程。
         if (GlobalV::MY_RANK != 0)
         {
+            // 非主进程收到广播后，将 `tmp` 赋值给本地的 `sep_enable[i]`，保证所有进程的使能标志一致。
             this->sep_enable[i] = tmp;
         }
+        // 进一步广播每个原子类型的自能势具体数据，确保所有进程都拥有完整的自能势信息。
+        // 在 MPI 广播（如 MPI_Bcast）的实际用法中，
+        // 所有进程（包括主进程和非主进程）都会调用同一个广播函数，并且这个函数会自动在所有进程之间同步数据
+        // 所以好像并不需要手动接收或赋值。
         this->seps[i].bcast_sep();
     }
 }
 #endif // __MPI
+
+// #ifdef 和 #endif 是C/C++中的条件编译指令，用于控制某段代码是否被编译进最终的程序。
+// 这里就是说只有定义了宏 __MPI 时，编译器才会编译 bcast_sep_cell() 函数的代码，实现并行功能，否则就是串行版本。
+// 编译命令中加上-D__MPI，就会让编译器自动在所有源文件的最前面加了一句 #define __MPI，
+// 所有用 #ifdef __MPI ... #endif 包裹的代码都会被编译器识别为“需要编译”，于是并行相关的代码就会被包含进最终的程序。
