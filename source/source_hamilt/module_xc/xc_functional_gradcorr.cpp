@@ -662,17 +662,26 @@ void XC_Functional::grad_rho(const std::complex<double>* rhog,
 	std::complex<double> *gdrtmp = new std::complex<double>[rho_basis->nmaxgr];
 
 	// the formula is : rho(r)^prime = \int iG * rho(G)e^{iGr} dG
+	// 依次处理x、y、z三个方向，最终每个实空间网格点都得到一个三维梯度向量。
 	for(int i = 0 ; i < 3 ; ++i)
 	{
 		// calculate the charge density gradient in reciprocal space.
 #ifdef _OPENMP
+// OpenMP 的并行指令，用于让后面的 for 循环在多核CPU上并行执行
+// static 表示每个线程分配到的循环迭代次数是固定的、均匀的。1024 表示每个线程一次分配1024个循环迭代
+// 你不需要手动写多线程的创建、分配、同步等复杂代码。
+// 只要用支持OpenMP的编译器（如g++/clang++加上 -fopenmp），
+// 编译器看到这句指令后，会自动把后面的for循环分成多份，分配给多个CPU核心并行执行
 #pragma omp parallel for schedule(static, 1024)
 #endif
 		for(int ig=0; ig<rho_basis->npw; ig++) {
+			// 微分（梯度）的傅里叶变换就是在倒空间乘以 i*G
+			// 在倒空间计算每个点的梯度分量：gdrtmp[ig] = i * rhog[ig] * G_i
 			gdrtmp[ig] = ModuleBase::IMAG_UNIT * rhog[ig] * rho_basis->gcar[ig][i];
 }
 
 		// bring the gdr from G --> R
+		// 逆傅里叶变换回实空间
 		rho_basis->recip2real(gdrtmp, gdrtmp);
 
 		// remember to multily 2pi/a0, which belongs to G vectors.
