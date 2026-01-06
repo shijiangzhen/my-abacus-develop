@@ -71,6 +71,10 @@ void XC_Functional::set_xc_type(const std::string xc_func_in)
     std::transform(xc_func.begin(), xc_func.end(), xc_func.begin(), (::toupper));
 	if( xc_func == "LDA" || xc_func == "PZ" || xc_func == "SLAPZNOGXNOGC") //SLA+PZ
 	{
+        // push_back 是 std::vector（动态数组）类的一个成员函数。它的作用是将一个元素添加到 vector 的末尾。
+        // func_id 是一个整数类型的 vector。
+        // push_back(XC_LDA_X)表示将 XC_LDA_X 这个常量（代表LDA交换泛函的编号）添加到 func_id 列表的末尾。
+        // 它可以动态扩展数组内容，不需要提前知道数组大小。
         func_id.push_back(XC_LDA_X);
         func_id.push_back(XC_LDA_C_PZ);
         func_type = 1;
