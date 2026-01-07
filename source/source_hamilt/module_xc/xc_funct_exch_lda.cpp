@@ -127,14 +127,30 @@ void XC_Functional::slater_spin( const double &rho, const double &zeta,
     double exup = f * alpha * rho13;
     /*
     exup 是自旋向上电子的交换能密度。推导如下：
+    
 
     1. 均匀电子气的交换能密度（每电子）：
         ε_x = - (3/4) * (3/π)^{1/3} * ρ^{1/3}
 
+        这是非自旋极化的计算公式，把自旋极化体系看作是“两个非极化体系的叠加”，有一个自旋标度关系：
+        LSDA中总交换能：E_x(ρ_up, ρ_down) = 0.5 * [ E_x(2ρ_up) + E_x(2ρ_down) ]
+       
+        推导每电子的交换能：
+        E_x(ρ_up, ρ_down) = 0.5 * [ E_x(2ρ_up) + E_x(2ρ_down) ]
+                            = 0.5 * [ ∫ (2ρ_up) ε_x(2ρ_up) dr + ∫ (2ρ_down) ε_x(2ρ_down) dr ]
+                            = ∫ ρ_up ε_x(2ρ_up) dr + ∫ ρ_down ε_x(2ρ_down) dr
+                            = ∫ ρ [ (ρ_up/ρ) ε_x(2ρ_up) + (ρ_down/ρ) ε_x(2ρ_down) ] dr
+                            = ∫ ρ ε_x(ρ_up, ρ_down) dr
+        所以每电子的交换能为：
+        ε_x(ρ_up, ρ_down) =  ρ_up/ρ * ε_x(2ρ_up) + ρ_down/ρ * ε_x(2ρ_down) 
+        因此下面的rho13计算其实是2ρ_up的三分之一次方，而不是ρ_up的三分之一次方。
+
     2. 对于自旋极化体系，总密度 ρ = ρ_up + ρ_down，自旋极化度 zeta = (ρ_up - ρ_down)/ρ
         则 ρ_up = (1 + zeta) * ρ / 2
             ρ_down = (1 - zeta) * ρ / 2
-        不知道代码的pow()函数里面为什么没有除以2，系数f里也没有2^(-1/3)，是bug吗？
+        故(1 + zeta) * ρ = 2 * ρ_up，
+          (1 - zeta) * ρ = 2 * ρ_down
+        则rho13 = (2 * ρ_up)^{1/3}。
 
     3. 对于每一自旋分量，交换能密度为：
         ε_x^σ = - (3/4) * (3/π)^{1/3} * (ρ_σ)^{1/3}
@@ -142,8 +158,8 @@ void XC_Functional::slater_spin( const double &rho, const double &zeta,
               = f * α * (ρ_σ)^{1/3}
         
         其中 f = -9/8 * (3/π)^{1/3} ，α = 2/3
-        所以，exup = f * α * (ρ_up)^{1/3}
-            exdw = f * α * (ρ_down)^{1/3}
+        所以，exup = f * α * (2ρ_up)^{1/3}
+            exdw = f * α * (2ρ_down)^{1/3}
 
     */
     // 计算自旋向上电子的交换势
@@ -155,6 +171,8 @@ void XC_Functional::slater_spin( const double &rho, const double &zeta,
     // 计算总交换能密度，按自旋分量加权平均，自旋向上占比 (1+zeta)/2，自旋向下占比 (1-zeta)/2
     // 这样可以保证在 zeta=0 时，两分量贡献相等，恢复到非自旋极化的交换能密度表达式，
     // 在 zeta=1 时，只有自旋向上分量贡献交换能密度；在 zeta=-1 时，只有自旋向下分量贡献交换能密度。
+    // 1.0 + zeta = 2 * (ρ_up/ρ), 根据ε_x(ρ_up, ρ_down) =  ρ_up/ρ * ε_x(2ρ_up) + ρ_down/ρ * ε_x(2ρ_down) 
+    // 可得这里的计算公式是正确的。
     ex = 0.50 * ((1.0 + zeta) * exup + (1.0 - zeta) * exdw);
 
     return;
