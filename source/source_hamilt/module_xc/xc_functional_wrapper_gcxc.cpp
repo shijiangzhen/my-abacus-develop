@@ -40,11 +40,18 @@ void XC_Functional::gcxc(const double &rho, const double &grho, double &sxc,
     // USE kinds
     // implicit none
     // real rho, grho, sx, sc, v1x, v2x, v1c, v2c;
+    
+    // grho：rho的梯度的平方
+    // sx：单位体积的交换能（rho和grho的函数）
+    // v1：单位体积的交换或关联能对密度的导数
+    // v2：单位体积的交换能或关联能对密度的梯度的导数再除以梯度
     const double small = 1.e-6;
     const double smallg = 1.e-10;
     double s,v1,v2;
     sxc = v1xc = v2xc = 0.0;
 
+    // 如果密度或其梯度过小，则不进行计算，直接返回零值，
+    // 避免在物理上无意义或数值不稳定的区域（如真空区或极小密度区）进行复杂的泛函计算
     if (rho <= small || grho < smallg)
     {
         return;
@@ -85,10 +92,13 @@ void XC_Functional::gcxc(const double &rho, const double &grho, double &sxc,
             case XC_HYB_GGA_XC_PBEH: //PBE0
                 double sx, v1x, v2x, sc, v1c, v2c;
                 XC_Functional::pbex(rho, grho, 0, sx, v1x, v2x);
+                // 计算杂化泛函(PBE0)的GGA交换部分的能量密度和势（单位体积），按混合比例缩放
                 sx *= (1.0 - XC_Functional::hybrid_alpha); 
                 v1x *= (1.0 - XC_Functional::hybrid_alpha); 
                 v2x *= (1.0 - XC_Functional::hybrid_alpha);
+                // 关联部分全部使用 pbe 泛函
                 XC_Functional::pbec(rho, grho, 0, sc, v1c, v2c);
+                // 将交换和关联部分的能量密度、势分别相加，得到杂化泛函GGA部分的总能量密度和势的两部分（单位体积）。
                 s = sx + sc;
                 v1 = v1x + v1c;
                 v2 = v2x + v2c;
@@ -96,6 +106,7 @@ void XC_Functional::gcxc(const double &rho, const double &grho, double &sxc,
             default: //SCAN_X,SCAN_C,HSE, and so on
                 throw std::domain_error("functional unfinished in "+std::string(__FILE__)+" line "+std::to_string(__LINE__));
         }
+        // 将GGA泛函的交换部分和关联部分的贡献累加得到总的GGA能量密度和势的两部分（单位体积）。
         sxc += s;
         v1xc += v1;
         v2xc += v2;
@@ -144,6 +155,8 @@ void XC_Functional::gcx_spin(double rhoup, double rhodw, double grhoup2, double 
         return;
     }
 
+    // 这种做法并不正确，后续会修改，应该像其他的一样将交换和关联部分放在一起处理
+    // 可以看到下面的代码中将func_id[0]（交换部分）和func_id[1]（关联部分）分开计算的
     // not the correct way to do things, will change later
     // should put exchange and correlation together
     // like the others
@@ -165,6 +178,10 @@ void XC_Functional::gcx_spin(double rhoup, double rhodw, double grhoup2, double 
             case XC_GGA_X_PBE: //PBX
                 if (rhoup > small && sqrt(fabs(grhoup2)) > small)
                 {
+                    // 根据自旋标度关系，有：
+                    // E_x(ρ_up, ρ_down) = 0.5 * [ E_x(2ρ_up) + E_x(2ρ_down) ]
+                    // 所以这里直接调用非自旋的函数来计算上自旋部分的交换能和势，但要输入2倍的密度
+                    // 而且梯度的平方也要乘以4（因为grho = |∇ρ|^2，ρ变为2ρ时，|∇(2ρ)|^2 = 4|∇ρ|^2）
                     XC_Functional::pbex(2.0 * rhoup, 4.0 * grhoup2, 0, sxup, v1xup, v2xup);
                 }
                 if (rhodw > small && sqrt(fabs(grhodw2)) > small)
@@ -213,7 +230,34 @@ void XC_Functional::gcx_spin(double rhoup, double rhodw, double grhoup2, double 
                 v1xup = 0.0; v2xup = 0.0;
                 v1xdw = 0.0; v2xdw = 0.0;
         }
+        /* 自旋极化的交换能密度和势按自旋标度关系组合：
+         E_x(ρ_up, ρ_down) = 0.5 * [ E_x(2ρ_up) + E_x(2ρ_down) ]
+                           = 0.5 * [ ∫ (2ρ_up) ε_x(2ρ_up) dr + ∫ (2ρ_down) ε_x(2ρ_down) dr ]
+                           = 0.5 * [ ∫sxup dr + ∫sxdw dr ]
+                           = ∫ 0.5 * (sxup + sxdw) dr
+                           = ∫ sx dr
+        所以 sx = 0.5 * (sxup + sxdw)
+        */
         sx = 0.50 * (sxup + sxdw);
+        /* pbex()函数输出的v1xup是d(sxup)/d(2*ρ_up)，记为v1xup00,其中sxup是基于2ρ_up计算的单位体积的交换能，
+          而最终的v1xup应该是上旋部分的单位体积交换能（0.5*sxup）对上旋密度（ρ_up）的导数
+        即 v1xup = d(0.5*sxup)/d(ρ_up)
+        = 0.5 * d(sxup)/d(2*ρ_up) * d(2*ρ_up)/d(ρ_up)
+        = 0.5 * v1xup00 * 2
+        = v1xup00
+        所以 最终的v1xup就是pbex()函数输出的v1xup值，不需要额外处理，
+        同理 v1xdw 也是一样的道理。
+       
+        然而，对于v2xup，pbex()函数输出的是 d(sxup)/d(|∇(2ρ_up)|) / |∇(2ρ_up)|,记为v2xup00,
+        而我们需要的v2xup是上旋部分的单位体积交换能（0.5*sxup）对上旋密度梯度的导数再除以梯度
+        即 v2xup = d(0.5*sxup)/d(|∇ρ_up|) / |∇ρ_up|
+        = 0.5 * d(sxup)/d(|∇(2ρ_up)|) * d(|∇(2ρ_up)|)/d(|∇ρ_up|) / |∇ρ_up|
+        = 0.5 * d(sxup)/d(|∇(2ρ_up)|) * 2 / |∇ρ_up|
+        = d(sxup)/d(|∇(2ρ_up)|) / |∇ρ_up|
+        = 2 * v2xup00
+        因此 需要将pbex()函数输出的v2xup乘以2，才能得到正确的v2xup值。
+        同理 v2xdw 也一样。
+        */
         v2xup = 2.0 * v2xup;
         v2xdw = 2.0 * v2xdw;       
     //}
@@ -253,14 +297,19 @@ void XC_Functional::gcc_spin(double rho, double &zeta, double grho, double &sc,
     sc = 0.00;
     v1cup = 0.00; v1cdw = 0.00;
     v2c = 0.00;
+    // 如果自旋极化参数 zeta 的绝对值大于 1（允许一个很小的数值误差 small），说明自旋极化参数超出了物理允许范围，直接返回
     if (std::abs(zeta) - 1.0 > small || rho <= small || sqrt(std::abs(grho)) <= small)
     {
         return;
     }
     else
     {
+        // 对自旋极化参数 zeta 进行截断，确保其数值不会超过物理允许的范围 [−1,1]，
+        // 并且避免数值上恰好等于1 或 −1（这样会导致后续计算出现奇异或不稳定）
         // ... ( - 1.0 + epsr )  <  zeta  <  ( 1.0 - epsr )
         // zeta = SIGN( MIN( ABS( zeta ), ( 1.D0 - epsr ) ) , zeta )
+        // Fortran中，SIGN(a, b)= |a| × sign(b)，即返回一个数值，其绝对值等于 |a|，符号与 b 相同
+        // 如果 zeta 的绝对值超过1−epsr，就把它截断到 1−epsr，保持 zeta 的符号不变
         x = std::min(std::abs(zeta), (1.0 - epsr));
 		if(zeta>0)
 		{
