@@ -41,6 +41,7 @@ void XC_Functional::gcxc(const double &rho, const double &grho, double &sxc,
     // implicit none
     // real rho, grho, sx, sc, v1x, v2x, v1c, v2c;
     
+    // rho：电子密度的绝对值
     // grho：rho的梯度的平方
     // sx：单位体积的交换能（rho和grho的函数）
     // v1：单位体积的交换或关联能对密度的导数
