@@ -20,6 +20,19 @@ void xc_functional_grad_wfc_op<T, Device>::operator()(
     for(int ig = 0; ig < npw; ig++) {
 		// the formula is : rho(r)^prime = \int iG * rho(G)e^{iGr} dG
 		// double kplusg = wfc_basis->getgpluskcar(ik,ig)[ipol] * tpiba;
+        /*
+        推导过程如下：
+
+        1. 在平面波展开中，波函数的梯度涉及到动量算符作用在波函数上。
+        2. 在倒空间，梯度算符对应于乘以 i(G + k)，其中 G 是倒格矢，k 是布里渊区采样点。
+        3. 由于单位制的不同，实际计算时需要乘以 tpiba（2π/a，a为晶格常数），将无量纲的倒格矢转换为实际单位。
+        4. gcar[(ik * npwx + ig) * 3 + pol] 取出第 ik 个 k 点，第 ig 个 G 矢量，第 pol 分量的 G 分量。
+        5. kvec_c[ik * 3 + pol] 取出第 ik 个 k 点，第 pol 分量的 k 分量。
+        6. 两者相加得到 G + k 的第 pol 分量，再乘以 tpiba 得到实际的动量分量。
+
+        最终公式：
+        kplusg = (gcar[(ik * npwx + ig) * 3 + pol] + kvec_c[ik * 3 + pol]) * tpiba;
+        */
         Real kplusg = (gcar[(ik * npwx + ig) * 3 + pol] +
                        kvec_c[ik * 3 + pol]) * tpiba;
                        

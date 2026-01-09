@@ -402,19 +402,27 @@ void XC_Functional::gradcorr(double &etxc, double &vtxc, ModuleBase::matrix &v,
 				{
 					// first term of the gradient correction:
 					// D(rho*Exc)/D(rho)
+					// 梯度校正的第一项：d(rho*Exc)/d(rho)
 					v(0, ir) += ModuleBase::e2 * v1xc;
 					// cout << "v    " << v(0, ir) << endl;
 					
 					// h contains
 					// D(rho*Exc) / D(|grad rho|) * (grad rho) / |grad rho|
+					// h1 = d(rho*Exc)/d(|grad rho|) * (grad rho) / |grad rho| ,
+					// 其中，v2xc = d(rho*Exc)/d(|grad rho|) / |grad rho|
 					h1[ir] = ModuleBase::e2 * v2xc * gdr1[ir];
 					
+					// local_vtxcgc为本线程的梯度校正势能（只对价电子部分）
+					// local_vtxcgc = d(rho*Exc)/d(rho) * (rho - rho_core)
 					local_vtxcgc += ModuleBase::e2* v1xc * ( rhotmp1[ir] - chr->rho_core[ir] );
+					// local_etxcgc为本线程的梯度校正能量
+					// segno为密度符号，保证能量符号与密度一致，当密度为负时，segno=-1，当密度为正时，segno=1
 					local_etxcgc += ModuleBase::e2* sxc  * segno;
 				}
 			} // end arho > epsr
 		}
 	}// end nspin0 == 1
+	// 自旋极化体系
 	else // spin polarized case
 	{
 #ifdef _OPENMP
@@ -496,9 +504,13 @@ void XC_Functional::gradcorr(double &etxc, double &vtxc, ModuleBase::matrix &v,
 				double v2c = 0.0;
 				double sx = 0.0;
 				double sc = 0.0;
+				// rh 为当前网格点上两个自旋通道密度之和（含核区电子密度）
 				double rh = rhotmp1[ir] + rhotmp2[ir];
+				// grho2a：自旋向上密度梯度的模平方（x^2 + y^2 + z^2）
 				grho2a = gdr1[ir].norm2();
+				// grho2b：自旋向下密度梯度的模平方（x^2 + y^2 + z^2）
 				grho2b = gdr2[ir].norm2();
+				// 调用gcx_spin函数，计算自旋极化体系下的交换能量密度（sx）及其相关势（v1xup, v1xdw, v2xup, v2xdw）
 				XC_Functional::gcx_spin(rhotmp1[ir], rhotmp2[ir], grho2a, grho2b,
 					sx, v1xup, v1xdw, v2xup, v2xdw);
 				
@@ -510,10 +522,14 @@ void XC_Functional::gradcorr(double &etxc, double &vtxc, ModuleBase::matrix &v,
 					}
 					else
 					{
+						// 自旋极化率
 						double zeta = ( rhotmp1[ir] - rhotmp2[ir] ) / rh;
+						// neg[ir]：由 noncolin_rho 计算，表示该点自旋分量与量子化轴的方向（+1 或 -1）
 						if(PARAM.inp.nspin==4&&(PARAM.globalv.domag||PARAM.globalv.domag_z)) { zeta = fabs(zeta) * neg[ir];
 }
+						// 自旋总密度梯度的模平方
 						const double grh2 = (gdr1[ir]+gdr2[ir]).norm2();
+						// 调用 gcc_spin 函数，计算自旋极化体系下的关联能量密度（sc）及其关联势（v1cup, v1cdw, v2c）
 						XC_Functional::gcc_spin(rh, zeta, grh2, sc, v1cup, v1cdw, v2c);
 						v2cup = v2c;
 						v2cdw = v2c;
@@ -535,6 +551,7 @@ void XC_Functional::gradcorr(double &etxc, double &vtxc, ModuleBase::matrix &v,
 				{
 					double tt1[3],tt2[3];
 					{
+						// 将自旋向上和自旋向下的密度梯度分量存入临时数组 tt1 和 tt2 中
 						tt1[0] = gdr1[ir].x;
 						tt1[1] = gdr1[ir].y;
 						tt1[2] = gdr1[ir].z;
@@ -548,9 +565,11 @@ void XC_Functional::gradcorr(double &etxc, double &vtxc, ModuleBase::matrix &v,
 						{
 							int ind = l*3 + m;
 							//    exchange
+							// 计算交换部分对应力张量的贡献（将自旋向上和自旋向下的分量分别考虑）
 							local_stress_gga [ind] += tt1[l] * tt1[m] * ModuleBase::e2 * v2xup + 
 									tt2[l] * tt2[m] * ModuleBase::e2 * v2xdw;
 							//    correlation
+							// 计算关联部分对应力张量的贡献（将自旋向上和自旋向下的分量分别考虑，以及它们的混合项）
 							local_stress_gga [ind] += ( tt1[l] * tt1[m] * v2cup + 
 									tt2[l] * tt2[m] * v2cdw + 
 									(tt1[l] * tt2[m] +
@@ -561,13 +580,18 @@ void XC_Functional::gradcorr(double &etxc, double &vtxc, ModuleBase::matrix &v,
 				else
 				{
 					// first term of the gradient correction : D(rho*Exc)/D(rho)
+					// 自旋向上和自旋向下梯度校正的第一项：d(rho*Exc)/d(rho)，累加每个网格点
 					v(0,ir) = v(0,ir) + ModuleBase::e2 * ( v1xup + v1cup );
 					v(1,ir) = v(1,ir) + ModuleBase::e2 * ( v1xdw + v1cdw );
 				
 					// h contains D(rho*Exc)/D(|grad rho|) * (grad rho) / |grad rho|
+					// h：包含 d(rho*Exc)/d(|grad rho|) * (grad rho) / |grad rho|
+					// 自旋向上分量和自旋向下分量分别计算，交换和关联部分、以及它们的混合项都考虑在内
 					h1[ir] = ModuleBase::e2 * ( ( v2xup + v2cup ) * gdr1[ir] + v2cud * gdr2[ir] );
 					h2[ir] = ModuleBase::e2 * ( ( v2xdw + v2cdw ) * gdr2[ir] + v2cud * gdr1[ir] );
 
+					// local_vtxcgc为本线程的梯度校正势能（只对价电子部分），包含交换和关联部分、自旋向上和向下分量
+					// local_etxcgc为本线程的梯度校正能量（包含交换和关联部分）
 					local_vtxcgc = local_vtxcgc + ModuleBase::e2 * ( v1xup + v1cup ) * ( rhotmp1[ir] - chr->rho_core[ir] * fac );
 					local_vtxcgc = local_vtxcgc + ModuleBase::e2 * ( v1xdw + v1cdw ) * ( rhotmp2[ir] - chr->rho_core[ir] * fac );
 					local_etxcgc = local_etxcgc + ModuleBase::e2 * ( sx + sc );
@@ -577,8 +601,15 @@ void XC_Functional::gradcorr(double &etxc, double &vtxc, ModuleBase::matrix &v,
 
 	}
 #ifdef _OPENMP
+	// #pragma omp critical用于用于创建一个临界区（Critical Section），
+	// 互斥执行：它保证在同一时刻只有一个线程能执行大括号 { ... } 内部的代码块，
+	// 防止数据竞争：在之前的代码中，每个线程都在并行计算自己的局部变量（如 local_stress_gga、local_etxcgc），
+	// 这一步需要将这些个人结果加到全局变量（如 stress_gga、etxcgc）中，
+	// 如果没有这个指令，多个线程同时写同一个内存位置会导致计算结果错误（即“数据竞争”）。
+	// (xc_functional_gradcorr_reduce)：这是给这个临界区起的名字，方便调试和识别。
 	#pragma omp critical(xc_functional_gradcorr_reduce)
 	{
+		// 如果计算应力，则将每个线程的局部应力张量累加到全局应力张量中
 		if(is_stress)
 		{
 			for(int l = 0;l< 3;l++)
@@ -590,12 +621,14 @@ void XC_Functional::gradcorr(double &etxc, double &vtxc, ModuleBase::matrix &v,
 				}
 			}
 		}
+		// 如果不计算应力，则将每个线程的局部梯度校正势和能量累加到全局变量中
 		else
 		{
 			vtxcgc += local_vtxcgc;
 			etxcgc += local_etxcgc;
 		}
 	}
+// 前面开启的 #pragma omp parallel 并行区域在这里结束
 }
 #endif
 
@@ -609,8 +642,11 @@ void XC_Functional::gradcorr(double &etxc, double &vtxc, ModuleBase::matrix &v,
 #endif
 		for(int ir=0; ir<rhopw->nrxx; ir++)
 		{
+			// 将之前均匀分配到自旋通道1的核区密度从 rhotmp1 中减去，
+			// 恢复 rhotmp1 只包含价电子部分的密度。
 			rhotmp1[ir] -= fac * chr->rho_core[ir];
 		}
+		// 对于自旋极化体系，还需要将核区密度从自旋通道2的密度中减去
 		if(nspin0==2)
 		{
 #ifdef _OPENMP
@@ -630,6 +666,7 @@ void XC_Functional::gradcorr(double &etxc, double &vtxc, ModuleBase::matrix &v,
 
 		for(int is=0; is<nspin0; is++)
 		{
+			// 对每个自旋通道，调用 grad_dot 函数计算h的散度，结果存储在 dh 中
 			if(is==0) {XC_Functional::grad_dot(h1,dh,rhopw,ucell->tpiba);
 }
 			if(is==1) {XC_Functional::grad_dot(h2,dh,rhopw,ucell->tpiba);
@@ -638,10 +675,12 @@ void XC_Functional::gradcorr(double &etxc, double &vtxc, ModuleBase::matrix &v,
 #pragma omp parallel for schedule(static, 1024)
 #endif
 			for(int ir=0; ir<rhopw->nrxx; ir++) {
+				// 将散度项从交换-相关势中减去
 				v(is, ir) -= dh[ir];
 }
 		
 			double sum = 0.0;
+			// 计算散度dh与对应自旋通道价电子密度的乘积在实空间的积分（累加）
 			if(is==0)
 			{
 #ifdef _OPENMP
@@ -660,14 +699,18 @@ void XC_Functional::gradcorr(double &etxc, double &vtxc, ModuleBase::matrix &v,
 					sum += dh[ir] * rhotmp2[ir];
 }
 			}
+			// 从梯度校正势能中减去该积分值
 			vtxcgc -= sum;
 		}
 		
 		delete[] dh;
 
+		// vtxc和etxc是主调用者传入的引用变量，是总势和总能；vtxcgc和etxcgc是当前函数内计算得到的梯度校正势和能量，
+		// 将本函数计算得到的梯度校正势和能量累加到总势和总能中
 		vtxc += vtxcgc;
 		etxc += etxcgc;
 
+		// 对于非共线自旋情况，需要对GGA势进行自旋分量的重组
 		if(PARAM.inp.nspin == 4 && (PARAM.globalv.domag||PARAM.globalv.domag_z))
 		{
 #ifdef _OPENMP
@@ -677,8 +720,10 @@ void XC_Functional::gradcorr(double &etxc, double &vtxc, ModuleBase::matrix &v,
 			{
 				for(int ir=0;ir<rhopw->nrxx;ir++)
 				{
+					// 对于有效的自旋通道（is < nspin0），将当前计算得到的 GGA 势能存入 vgg，以便后续处理。
 					if(is<nspin0) { vgg[is][ir] = v(is,ir);
 }
+					// 恢复势能数组 v 为原始值（即未加GGA修正前的势），为后续的自旋分量重组做准备。
 					v(is,ir) = vsave[is][ir];
 				}
 			}
@@ -687,15 +732,20 @@ void XC_Functional::gradcorr(double &etxc, double &vtxc, ModuleBase::matrix &v,
 #endif
 			for(int ir=0;ir<rhopw->nrxx;ir++)
 			{
+				// 将自旋向上和向下通道的GGA势能平均，累加到总密度分量的势能上。
 				v(0,ir) += 0.5 * (vgg[0][ir] + vgg[1][ir]);
+				// 计算自旋矢量模长 amag，判断该点是否有显著的自旋极化。
 				double amag = sqrt(pow(chr->rho[1][ir],2)+pow(chr->rho[2][ir],2)+pow(chr->rho[3][ir],2));
 				if(amag>1e-12)
 				{
+					// 将自旋通道的势能差，按自旋密度方向分配到各自旋分量上，实现自旋分量势能的重组。
 					for(int i=1;i<4;i++) {
 						v(i,ir)+= neg[ir] * 0.5 *(vgg[0][ir]-vgg[1][ir])*chr->rho[i][ir]/amag;
 }
 				}
 			}
+			// 这个for循环将对角化后的自旋通道势能（即“自旋向上/下”）重新组合为原始的四分量（总密度 + 三个自旋分量）形式，
+			// 保证非共线自旋体系下势能的物理自洽性，这种重组方式确保了自旋极化方向和大小的信息被正确地反映到势能分量中。
 		}
 	}
 	// deacllocate
@@ -734,7 +784,12 @@ void XC_Functional::gradcorr(double &etxc, double &vtxc, ModuleBase::matrix &v,
 	return;
 }
 
+// template是C++模板声明，表示后面的函数（或类）是一个泛型模板函数，可以接受不同类型的参数
+// T：类型参数，代表数据类型（如 double、std::complex<double> 等）。
+// Device：类型参数，代表计算设备（如 CPU、GPU）。
+// Real：类型参数，代表实数类型（如 float、double）。
 template <typename T, typename Device, typename Real>
+// 计算波函数梯度
 void XC_Functional::grad_wfc(
     const int ik,
     const Real tpiba,
@@ -742,19 +797,49 @@ void XC_Functional::grad_wfc(
 	const T* rhog,
     T* grad)
 {
+	// using ct_Device 这是类型别名声明，用于简化后续代码中的类型书写。
+	// ct::PsiToContainer<Device>::type 是一个类型萃取（type trait），
+	// 根据模板参数 Device（比如 CPU 或 GPU），自动选择对应的容器类型（如张量的存储方式）。
+	// ct_Device 就是后续代码中实际用到的设备类型（比如 CpuDevice 或 GpuDevice）
     using ct_Device = typename ct::PsiToContainer<Device>::type;
+	// 表示第 ik 个 k 点上的平面波数（npw_k）。wfc_basis->npwk 是一个数组，存储每个 k 点的平面波数量。
 	const int npw_k = wfc_basis->npwk[ik];
 	
+	// 创建了一个张量对象 porter，用于存储波函数梯度计算中的中间结果。
+	// ct::Tensor(...)：构造一个张量对象，类似于多维数组，支持不同数据类型和设备（如CPU/GPU）。
+	// ct::DataTypeToEnum<T>::value：根据模板参数 T（如 double 或 std::complex<double>），自动选择张量的数据类型。
+	// ct::DeviceTypeToEnum<ct_Device>::value：根据设备类型（如 CpuDevice 或 GpuDevice），自动选择张量的存储设备。
+	// {wfc_basis->nmaxgr}：指定张量的形状，这里是一维，长度为 nmaxgr，即最大梯度分量数。
+	// std::move用于将临时创建的张量对象的所有权转移给 porter，提高效率，避免不必要的拷贝。
+	// porter 是后续波函数梯度计算的临时存储空间，支持在不同设备和数据类型下高效运算。
+	// auto：让编译器会根据右侧表达式的类型，自动推断 porter 的实际类型，无需你手动写出完整类型名,
+	// 这在模板和复杂类型场景下非常方便，能让代码更简洁易读
 	auto porter = std::move(ct::Tensor(
         ct::DataTypeToEnum<T>::value, ct::DeviceTypeToEnum<ct_Device>::value, {wfc_basis->nmaxgr}));
+	// 创建了一个张量映射对象gcar，用于在后续波函数梯度计算中，提供G空间（倒空间）格矢的坐标数据，
+	// 并根据需要将其转移到指定计算设备（如CPU或GPU）。
+	// ct::TensorMap(...)：将已有的原始数据（这里是 wfc_basis->gcar，即G矢量坐标数组）映射为张量对象，方便后续高效运算。
+	// wfc_basis->gcar[0][0]：指向G矢量坐标数据的首地址。
+	// ct::DataType::DT_DOUBLE：指定数据类型为 double。
+	// ct::DeviceType::CpuDevice：初始设备为CPU。
+	// {wfc_basis->nks * wfc_basis->npwk_max, 3}：张量的形状，表示有 nks * npwk_max 个G矢量，每个矢量有3个分量（x, y, z）。
+	// .to_device<ct_Device>()：将张量数据转移到目标设备（如CPU或GPU），ct_Device 是根据模板参数自动推断的设备类型。
 	auto gcar = ct::TensorMap(
 		&wfc_basis->gcar[0][0], ct::DataType::DT_DOUBLE, ct::DeviceType::CpuDevice, {wfc_basis->nks * wfc_basis->npwk_max, 3}).to_device<ct_Device>();
+	// 创建了一个张量映射对象 kvec_c，用于在后续波函数梯度计算中，提供所有 k 点的坐标数据，
+	// 并根据需要将其转移到指定计算设备（如 CPU 或 GPU）。
+	// {wfc_basis->nks, 3}：张量的形状，表示有 nks 个 k 点，每个 k 点有 3 个分量（x, y, z）。
 	auto kvec_c = ct::TensorMap(
 		&wfc_basis->kvec_c[0][0],ct::DataType::DT_DOUBLE, ct::DeviceType::CpuDevice, {wfc_basis->nks, 3}).to_device<ct_Device>();
 	
+	// 创建了一个用于波函数梯度计算的算子对象 xc_functional_grad_wfc_solver
+	// hamilt::xc_functional_grad_wfc_op<T, Device>()：这是一个工厂函数或类模板实例化，根据数据类型和设备类型，
+	// 返回一个适合当前环境的波函数梯度计算算子。
 	auto xc_functional_grad_wfc_solver 
 		= hamilt::xc_functional_grad_wfc_op<T, Device>();
 
+	// 计算波函数在三个方向（x, y, z）的梯度，并将结果从倒空间（G空间）变换到实空间，最终写入输出数组 grad。
+	// ipol：方向索引（0,1,2），分别对应 x、y、z。
 	for(int ipol=0; ipol<3; ipol++) {
 		xc_functional_grad_wfc_solver(
             ik, ipol, npw_k, wfc_basis->npwk_max, // Integers
