@@ -838,7 +838,7 @@ void XC_Functional::grad_wfc(
 	auto xc_functional_grad_wfc_solver 
 		= hamilt::xc_functional_grad_wfc_op<T, Device>();
 
-	// 计算波函数在三个方向（x, y, z）的梯度，并将结果从倒空间（G空间）变换到实空间，最终写入输出数组 grad。
+	// 调用函数xc_functional_grad_wfc_solver()计算波函数在三个方向（x, y, z）的梯度
 	// ipol：方向索引（0,1,2），分别对应 x、y、z。
 	for(int ipol=0; ipol<3; ipol++) {
 		xc_functional_grad_wfc_solver(
