@@ -839,6 +839,7 @@ void XC_Functional::grad_wfc(
 		= hamilt::xc_functional_grad_wfc_op<T, Device>();
 
 	// 调用函数xc_functional_grad_wfc_solver()计算波函数在三个方向（x, y, z）的梯度
+	// 结果porter[ig] = i * (k_α + G_α) * ρ_G，即第ik个k点下第ig个平面波分量在pol方向上的倒空间梯度系数
 	// ipol：方向索引（0,1,2），分别对应 x、y、z。
 	for(int ipol=0; ipol<3; ipol++) {
 		xc_functional_grad_wfc_solver(
@@ -849,7 +850,11 @@ void XC_Functional::grad_wfc(
 			rhog, porter.data<T>());    // Array of std::complex<double>
 
 		// bring the gdr from G --> R
+		// 声明一个指向设备（根据输入的设备类型确定是 CPU 或 GPU）的指针 ctx，并初始化为 nullptr。
 		Device * ctx = nullptr;
+		// 这是一个成员函数调用，作用是将 porter.data<T>()（倒空间数据，G空间）通过傅里叶变换转换到实空间（R空间）。
+		// 调用的应该是pw_basis_k.h里的PW_Basis_K::recip_to_real()函数，根据其在pw_basis_k.h中的声明可知，
+		// 函数中还有两个参数add和factor，默认值分别为false和1.0，这里没有传入，使用的默认值。
 		wfc_basis->recip_to_real(ctx, porter.data<T>(), porter.data<T>(), ik);
 
 		xc_functional_grad_wfc_solver(

@@ -168,16 +168,60 @@ void PW_Basis_K::recip2real(const std::complex<FPTYPE>* in,
                             const bool add,
                             const FPTYPE factor) const
 {
+    // tick是一个计时器函数，用于记录当前类执行 "recip2real" 这段代码的耗时
     ModuleBase::timer::tick(this->classname, "recip2real");
+    // assert是一个断言，确保当前对象的 gamma_only 成员变量为 false。
+    // 作用是保证此处执行的是非 Gamma-only的逆傅里叶变换（即处理的是一般的复数 FFT，而不是只处理实数 Gamma 点的特殊情况）。
+    // 如果条件不满足，程序会在此处终止并报错
     assert(this->gamma_only == false);
+    // fft_bundle.get_auxg_data<FPTYPE>() 返回一个指向 G 空间辅助数据的指针（类型为 FPTYPE，如 float 或 double）。
+    // this->nst * this->nz 是需要清零的元素总数。
+    // ModuleBase::GlobalFunc::ZEROS(...) 是一个工具函数，用于将指定数组的所有元素设置为 0。
+    // 用途：在进行傅里叶变换前，先把辅助数组清零，避免残留数据影响后续计算
     ModuleBase::GlobalFunc::ZEROS(fft_bundle.get_auxg_data<FPTYPE>(), this->nst * this->nz);
 
+    // npwk_max 是每个 k 点分配的最大平面波数，startig 用于定位当前 k 点的平面波数据在一维数组中的起始位置。
+    // 作用是计算当前 k 点（ik）在全局平面波数组中的起始索引。
     const int startig = ik * this->npwk_max;
+    // 获取当前 k 点实际的平面波数（即 G 向量的数量）。
     const int npwk = this->npwk[ik];
+    // 获取一个指向 G 空间辅助数组的指针，类型为 FPTYPE（如 float 或 double）。
     auto* auxg = this->fft_bundle.get_auxg_data<FPTYPE>();
 #ifdef _OPENMP
+// 4096 / sizeof(FPTYPE) 计算出每个线程一次处理多少个元素，
+// 如果是 float，每块 4096/4 = 1024 个元素。如果是 double，每块 4096/8 = 512 个元素。
 #pragma omp parallel for schedule(static, 4096 / sizeof(FPTYPE))
 #endif
+/*
+1. 设定场景
+FFT 网格 (auxg)：逻辑大小为 8（即 N_stems×N_z=8）。
+K 点信息：共 2 个 k 点，每个 k 点最大分配空间 npwk_max = 3。
+当前处理：第二个 k 点（ik = 1），该 k 点实际只有 2 个平面波（npwk = 2）。
+
+2. 内存状态
+in (输入指针)：
+由于 ABACUS 每次只传入当前 k 点的指针，in 指向的是长度为 2 的数组：[B1, B2]。
+startig (地图偏移)：
+ik * npwk_max = 1 * 3 = 3。
+igl2isz_k (全局座位表)：
+这是一个大数组，存着所有 k 点的映射。
+索引: [ 0, 1, 2, | 3, 4, 5 ]
+内容: [ ?, ?, ?, | 2, 5, ? ] （前 3 个是 k=0 的，后 3 个是 k=1 的）。
+auxg (FFT 网格)：
+初始化全为 0：[0, 0, 0, 0, 0, 0, 0, 0]。
+
+3. 执行映射循环
+代码逻辑：auxg[this->igl2isz_k[igl + startig]] = in[igl];
+
+第 1 次迭代 (igl = 0)：
+取行李：in[0] 是 B1。
+看地图：igl + startig = 3。查询 igl2isz_k[3] 得到网格位置 2。
+放行李：auxg[2] = B1。
+第 2 次迭代 (igl = 1)：
+取行李：in[1] 是 B2。
+看地图：igl + startig = 4。查询 igl2isz_k[4] 得到网格位置 5。
+放行李：auxg[5] = B2。
+*/
     for (int igl = 0; igl < npwk; ++igl)
     {
         auxg[this->igl2isz_k[igl + startig]] = in[igl];
@@ -313,6 +357,7 @@ void PW_Basis_K::real_to_recip(const base_device::DEVICE_CPU* /*dev*/,
     #endif
 }
 
+// PW_Basis_K::recip_to_real 针对 CPU 设备和 float 类型的特化实现。
 template <>
 void PW_Basis_K::recip_to_real(const base_device::DEVICE_CPU* /*dev*/,
                                const std::complex<float>* in,
@@ -323,6 +368,7 @@ void PW_Basis_K::recip_to_real(const base_device::DEVICE_CPU* /*dev*/,
 {
     this->recip2real(in, out, ik, add, factor);
 }
+// PW_Basis_K::recip_to_real 针对 CPU 设备和 double 类型的特化实现。
 template <>
 void PW_Basis_K::recip_to_real(const base_device::DEVICE_CPU* /*dev*/,
                                const std::complex<double>* in,
@@ -331,6 +377,8 @@ void PW_Basis_K::recip_to_real(const base_device::DEVICE_CPU* /*dev*/,
                                const bool add,
                                const double factor) const
 {
+    // 如果定义了 __DSP，调用 recip2real_dsp（适配 DSP 平台的实现）
+    // __DSP 是一个条件编译宏，用于区分是否在特定的 DSP（数字信号处理器，Digital Signal Processor）平台上编译和运行。
     #if defined(__DSP)
         this->recip2real_dsp(in,out,ik,add,factor);
     #else

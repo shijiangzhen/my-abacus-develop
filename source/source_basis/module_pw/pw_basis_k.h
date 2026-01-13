@@ -192,6 +192,16 @@ public:
         this->real2recip(in,out,ik,add,factor);
       #endif
     }
+
+    // std::is_same<Device, base_device::DEVICE_CPU>::value，
+    // 判断 Device 类型是否等于 base_device::DEVICE_CPU，结果为 true 或 false。
+    // std::enable_if<... , int>::type
+    // 如果条件为 true，则 type 为 int，否则该模板不可用。
+    // = 0：给这个模板参数一个默认值，方便调用时不用显式传递。
+    // 用途：用于区分不同设备（如 CPU、GPU）时，选择不同的模板实现。
+    // 如果 Device 不是 base_device::DEVICE_CPU，则该模板不会参与重载匹配。
+    // 也就是说，下面的这个函数recip_to_real()是上面的recip_to_real()的特化实现，当Device是CPU时就会调用这个函数。
+    // 上面的recip_to_real()是通用入口，用于适配不同设备，通常在外部调用时用它。
     template <typename TK,
               typename Device,
               typename std::enable_if<std::is_same<Device, base_device::DEVICE_CPU>::value, int>::type = 0>
