@@ -857,6 +857,10 @@ void XC_Functional::grad_wfc(
 		// 函数中还有两个参数add和factor，默认值分别为false和1.0，这里没有传入，使用的默认值。
 		wfc_basis->recip_to_real(ctx, porter.data<T>(), porter.data<T>(), ik);
 
+		// 这是一个“赋值操作器”，将当前方向（ipol）上的波函数梯度数据从中间缓冲 porter 拷贝到最终输出 grad。
+		// 前一句代码已将波函数在 G 空间的梯度分量（porter）通过傅里叶变换变换到 R 空间。
+		// 这一步将 porter 的数据（实空间梯度分量）整理/赋值到 grad 数组中，完成最终的波函数梯度输出。
+		// grad是一个一维数组，但在逻辑上是一个[3][nrxx]的二维数组，第一维是方向（x,y,z），第二维是实空间网格点索引。
 		xc_functional_grad_wfc_solver(
             ipol, wfc_basis->nrxx,	// Integers
 			porter.data<T>(), grad);	// Array of std::complex<double>
@@ -920,17 +924,38 @@ void XC_Functional::grad_dot(const ModuleBase::Vector3<double>* h, double* dh, c
 #ifdef _OPENMP
 #pragma omp parallel for schedule(static, 1024)
 #endif
+		// 将实空间三维矢量场 h 的第 i 分量，拷贝到复数数组 aux 的实部，虚部填 0。
+		// 这样做的目的是为后续的傅里叶变换（real2recip）准备数据，
+		// 把实空间的某一分量（如 x 分量）转成复数格式，便于后续在倒空间做微分或其它操作。
 		for(int ir = 0; ir < rho_basis->nrxx; ++ir) {
 			aux[ir] = std::complex<double>( h[ir][i], 0.0);
 }
 
 		// bring to G space.
+		// 在实空间中散度的计算公式为：div h(r) = d[h_x(r)]/dx + d[h_y(r)]/dy + d[h_z(r)]/dz
+		// 在倒空间中，微分操作对应乘以 i*G，因此散度在倒空间公式：div h(G) = i*[G_x*h_x(G) + G_y*h_y(G) + G_z*h_z(G)]
+		// 下面调用的PW_Basis::real2recip 做的是原地(in-place)变换：输入输出指针都传 aux，因此变换后 aux 的内容被覆盖。
+		// 它把 h_i(r) 变成 h_i(G)，即返回的aux[ig] ≈ h_i(G)，为后续在倒空间计算散度做准备。
+		// 为什么 aux 能同时当 real-space 和 recip-space 缓冲？
+		// 因为 aux 分配的是：new complex<double>[rho_basis->nmaxgr]
+		// nmaxgr 设计成足够大，能覆盖 FFT 过程中需要的最大长度（至少要能容纳 nrxx 和 npw 这两种访问方式）。
+		// 因此同一个数组可以复用：先当 R-space：写 aux[0..nrxx-1]；再当 G-space：读 aux[0..npw-1]
 		rho_basis->real2recip(aux,aux);
+
+		// if (i == 0) 用 =，else 用 += 的原因：
+		// 散度在 G 空间为：div h(G) = i*[G_x*h_x(G) + G_y*h_y(G) + G_z*h_z(G)]
+		// 循环 i = 0,1,2 分别处理 x、y、z 分量：
+		// 当 i==0（第一个分量）时，用 = 初始化 gaux[ig] = i*G_x*h_x(G)；
+		// 当 i==1,2 时，用 += 累加：
+		// gaux[ig] += i*G_y*h_y(G)，gaux[ig] += i*G_z*h_z(G)；
+		// 最终 gaux[ig] 变成 i(G_x*h_x(G) + G_y*h_y(G) + G_z*h_z(G))，也就是散度在 G 空间的值。
 		if (i == 0)
 		{
 #ifdef _OPENMP
 #pragma omp parallel for schedule(static, 1024)
 #endif
+			// gcar[ig][i] 是第 ig 个 G 向量的第 i 分量 G_i（单位是 2π/a）。
+			// 这里在 G 空间计算的是 i * h_i(G) * G_i。
 			for(int ig = 0; ig < rho_basis->npw; ++ig) {
 				gaux[ig] =  ModuleBase::IMAG_UNIT * aux[ig] * rho_basis->gcar[ig][i];
 }
@@ -947,11 +972,14 @@ void XC_Functional::grad_dot(const ModuleBase::Vector3<double>* h, double* dh, c
 	}
 
 	// bring back to R space
+	// 对gaux 执行逆快速傅里叶变换，把 gaux(G) 变回实空间，aux(r) 的实部就是 div h(r)
 	rho_basis->recip2real(gaux,aux);
 
 #ifdef _OPENMP
 #pragma omp parallel for schedule(static, 1024)
 #endif
+	// 对每个实空间网格点 ir，取 aux[ir] 的实部（即散度值，虚部应为零或极小），
+	// 并乘以物理单位缩放因子 tpiba，得到最终的实空间上每个网格点的散度值，并写入输出数组 dh。
 	for(int ir=0; ir<rho_basis->nrxx; ir++) {
 		dh[ir] = aux[ir].real() * tpiba;
 }
@@ -968,13 +996,44 @@ void XC_Functional::noncolin_rho(double *rhoout1, double *rhoout2, double *neg,
 	//spin up and spin down components of the charge.
 	//If lsign is true up and dw are with respect to the fixed quantization axis 
 	//ux, otherwise rho + |m| is always rhoup and rho-|m| is always rhodw.
+	// 此函数可对自旋密度矩阵进行对角化处理，并作为输出结果给出电荷的自旋向上和自旋向下分量。
+	// 若 lsign 为 true，则 up 和 dw 均与固定量化轴相关；
+	// 否则，ρ + |m| 始终为 rhoup，而 ρ - |m| 始终为 rhodw。
 #ifdef _OPENMP
 #pragma omp parallel for schedule(static, 1024)
 #endif
+	// 将 neg 数组的所有元素初始化为 1.0。
+	// 背景：neg 数组用于指示非共线自旋体系中，每个网格点的局部磁矩方向与量子化轴方向的关系（同向 +1.0 或反向 -1.0），
+	// 默认假设为同向（1.0）。
 	for(int ir = 0;ir<nrxx;ir++)
 	{
 		neg[ir] = 1.0;
 	}
+	
+	// 下面的if里的代码是在非共线自旋（Non-collinear spin）体系中，根据固定量子化轴确定每个网格点上自旋的方向。
+	/*
+	判定条件 if(lsign_)：
+	lsign_ 是一个布尔标志，表示是否采用固定量子化轴（Fixed Quantization Axis）。
+	如果为 true，则需要判断每个点局部磁矩相对于该轴的正负。
+	
+	计算点积：
+	rho[1][ir], rho[2][ir], rho[3][ir] 分别代表第 ir 个网格点上自旋磁矩的 mx,my,mz分量。
+	ux_[0], ux_[1], ux_[2] 代表预设的量子化轴单位矢量的分量。
+	代码计算 m(r)⋅ n（磁矩矢量与量子化轴的点积）：
+	rho[1][ir]*ux_[0] + rho[2][ir]*ux_[1] + rho[3][ir]*ux_[2]
+	
+	确定方向因子 neg[ir]：
+	如果点积 > 0：局部磁矩方向与量子化轴的夹角小于 90 度（同向偏转），设置 neg[ir] = 1.0。
+	否则：局部磁矩与轴方向相反（反向偏转），设置 neg[ir] = -1.0。
+
+	物理意义：	
+	在非共线自旋计算中，最终需要得到等效的“自旋向上”和“自旋向下”电荷密度。
+	neg[ir] 决定了在对角化自旋密度矩阵时，是将局部磁矩模长 ∣m∣ 加上（1.0）还是减去（-1.0）到总密度中。
+
+	总结：
+	这段代码通过计算局部磁矩与固定量子化轴的点积，为每个网格点分配一个方向符号（±1），
+	从而确保全系统的自旋分量能按照统一的参考轴进行数值处理。
+	*/
 	if(lsign_)
 	{
 #ifdef _OPENMP
@@ -990,21 +1049,110 @@ void XC_Functional::noncolin_rho(double *rhoout1, double *rhoout2, double *neg,
 #ifdef _OPENMP
 #pragma omp parallel for
 #endif
+/*
+推导 rhoout1 / rhoout2（non-collinear 自旋情形）：
+
+在每个实空间网格点 r，上有总电荷密度 n(r) 与磁化密度矢量 m(r)：
+  n(r)   = rho[0][ir]
+  m(r)   = (mx,my,mz) = (rho[1][ir], rho[2][ir], rho[3][ir])
+  |m(r)| = sqrt(mx^2 + my^2 + mz^2)
+
+对应的 2×2 自旋密度矩阵可写为（Pauli 矩阵表示）：
+  ρ̂(r) = 1/2 * ( n(r) I + m(r) · σ )
+其中 I 为 2×2 单位矩阵，σ=(σx,σy,σz) 为 Pauli 矩阵。
+
+把它写成显式矩阵形式（等价表达之一）：
+  ρ̂ = 1/2 * [ n + mz      mx - i my
+			  mx + i my    n - mz ]
+
+要得到“等效的”自旋向上/向下电荷密度，就是求该矩阵的两个本征值 λ±：
+  det(ρ̂ - λ I) = 0
+
+由于：
+  tr(ρ̂)  = λ+ + λ- = n
+  det(ρ̂) = λ+ λ-   = 1/4 * (n^2 - |m|^2)
+（可直接由上面矩阵行列式计算得到：det(ρ̂)=1/4[(n+mz)(n-mz) - (mx^2+my^2)]
+						   =1/4[n^2 - (mx^2+my^2+mz^2)]
+						   =1/4[n^2 - |m|^2]）
+
+因此特征方程为：
+  λ^2 - (tr ρ̂) λ + det ρ̂ = 0
+  λ^2 - n λ + 1/4 (n^2 - |m|^2) = 0
+
+解之：
+  λ = [ n ± sqrt( n^2 - (n^2 - |m|^2) ) ] / 2
+	= [ n ± |m| ] / 2
+
+于是（若不强制固定量子化轴符号）：
+  ρ_up(r) = (n + |m|)/2
+  ρ_dw(r) = (n - |m|)/2
+
+若 lsign_ 为 true，要求“up/dw”相对于固定量子化轴 ux_ 定义：
+  neg(r) = sign( m(r) · ux_ )  （上面已算出）
+则把 |m| 的“正负方向”按该轴投影统一起来：
+  ρ_up(r) = (n + neg*|m|)/2
+  ρ_dw(r) = (n - neg*|m|)/2
+
+这正是下面对 rhoout1/rhoout2 的赋值公式来源。
+*/
+	// 下面的for循环用于将非共线自旋体系的密度矩阵对角化计算出等效的“自旋向上”和“自旋向下”密度分量。
 	for(int ir = 0;ir<nrxx;ir++)
 	{
+		// amag 计算的是局部磁矩矢量的模长 |m(r)|=sqrt(mx^2 + my^2 + mz^2)
 		double amag = sqrt(pow(rho[1][ir],2)+pow(rho[2][ir],2)+pow(rho[3][ir],2));
+		// 非共线体系的自旋密度是一个 2×2 的矩阵。将其对角化后，
+		// 得到的两个特征值即为该点局部坐标系下的自旋向上和自旋向下密度:
+		// 表达式分别为：ρ_up(r) = (ρ_total + neg*|m|)/2，ρ_dw(r) = (ρ_total - neg*|m|)/2
+		// rho[0][ir] 是总电荷密度ρ_total
+		// neg[ir] 的作用：
+		// 如果在前面通过点积判断出局部磁矩与全局量子化轴方向相反（neg = -1.0），则公式里的加减号会反转。
+		// 这确保了最终生成的 rhoout1（拟向上）和 rhoout2（拟向下）在全空间是按照统一的参考轴定义的，而不仅仅是简单的“大值”和“小值”。
 		rhoout1[ir] = 0.5 * (rho[0][ir] + neg[ir] * amag);
 		rhoout2[ir] = 0.5 * (rho[0][ir] - neg[ir] * amag);
 	}
 	return;
 }
 
+/*
+下面这行代码是对 XC_Functional::grad_wfc 模板函数的显式实例化，指定了模板参数：
+
+T = std::complex<double>：数据类型为复数（double 精度），即波函数和梯度都用复数表示。
+Device = base_device::DEVICE_CPU：计算设备为 CPU。
+Real = double：实数类型为 double。
+
+作用：
+这行代码告诉编译器，必须为上述参数组合生成 grad_wfc 的具体实现代码（即模板实例化），以便链接时能找到对应的符号。
+这样做通常用于模板函数定义和调用分属不同源文件时，确保链接不会出错。
+
+函数功能简述：
+grad_wfc 用于计算波函数在实空间的梯度，输入为倒空间波函数（rhog），输出为实空间梯度（grad）。
+该实例化版本专门用于 CPU 上、复数波函数的梯度计算。
+
+一句话总结：
+这行代码强制生成 XC_Functional::grad_wfc 在 CPU 上、复数波函数输入下的模板实例，确保该功能可被正确调用和链接。
+*/
 template void XC_Functional::grad_wfc<std::complex<double>, base_device::DEVICE_CPU, double>(
     const int ik,
     const double tpiba,
     const ModulePW::PW_Basis_K* wfc_basis,
     const std::complex<double>* rhog,
     std::complex<double>* grad);
+
+/*
+下面这段代码是对 XC_Functional::grad_wfc 模板函数的显式实例化，用于 GPU 设备（CUDA 或 ROCM 环境）。
+
+T = std::complex<double>：数据类型为复数（double 精度）。
+Device = base_device::DEVICE_GPU：计算设备为 GPU（如 CUDA 或 ROCM 支持的显卡）。
+Real = double：实数类型为 double。
+
+作用：
+这行代码告诉编译器，必须为上述参数组合生成 grad_wfc 的具体实现代码（即模板实例化），以便在 GPU 上调用时能正确链接。
+只有在定义了 __CUDA 或 __ROCM 宏时（即编译支持 GPU 时）才会生成这份实例。
+
+一句话总结：
+这行代码强制生成 XC_Functional::grad_wfc 在 GPU 上、复数波函数输入下的模板实例，
+确保该功能在 CUDA/ROCM 环境下可被正确调用和链接。
+*/
 #if __CUDA || __ROCM
 template void XC_Functional::grad_wfc<std::complex<double>, base_device::DEVICE_GPU, double>(
     const int ik,

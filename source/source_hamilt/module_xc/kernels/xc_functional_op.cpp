@@ -153,6 +153,15 @@ void xc_functional_grad_wfc_op<T, Device>::operator()(
 	}
 }
 
+// 这个函数是一个“赋值操作器”，
+// 用于将某一方向（ipol）上的波函数梯度数据从临时缓冲区 porter 拷贝到最终输出数组 grad 的对应分量。
+// ipol：方向索引（0=x, 1=y, 2=z），决定写入 grad 的哪一块。
+// nrxx：实空间网格点总数。
+// porter：输入数组，存储当前方向的所有网格点的梯度值（通常是逆FFT后的结果）。
+// grad：输出数组，按 [方向][网格点] 排列（线性化为 grad[ipol * nrxx + ir]）。
+// 执行流程：
+// 对每个实空间网格点 ir，将 porter[ir] 的值写入 grad[ipol * nrxx + ir]。
+// 这样，grad 的第 ipol 个方向分量就被填充为当前方向的梯度数据。
 template <typename T, typename Device>
 void xc_functional_grad_wfc_op<T, Device>::operator()(
     const int& ipol,

@@ -201,6 +201,7 @@ void FFT_Bundle::fftzbac(std::complex<float>* in, std::complex<float>* out) cons
 template <>
 void FFT_Bundle::fftzbac(std::complex<double>* in, std::complex<double>* out) const
 {
+    // fft_cpu.cpp中的函数FFT_CPU<double>::fftzbac应该是具体实现
     fft_double->fftzbac(in, out);
 }
 
