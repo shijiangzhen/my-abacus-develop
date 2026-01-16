@@ -361,11 +361,42 @@ void FFT_CPU<double>::clear()
 template <>
 void FFT_CPU<double>::fftxyfor(std::complex<double>* in, std::complex<double>* out) const
 {
+    // this->nplane:在并行 FFT 的数据分解中，代表当前进程所负责的 z 方向切片（平面）的数量
+    // this->ny:代表 y 方向的网格点数
+    // nxy：它代表了在当前进程的内存布局中，对于每一个固定的x坐标，包含的（y,z）数据点的数量
+    // 当执行x方向的 FFT 时，npy告诉FFTW 一次性执行多少条批量的 1D FFT。
     int npy = this->nplane * this->ny;
     if (this->xprime)
     {
-        
+        // 利用 FFTW 批量执行当前进程负责的所有 x 方向的一维正向傅里叶变换。
+        // 布局逻辑：它一次性对所有固定的 (y,z local) 坐标，沿着 x 轴执行一维 FFT。
+        // 在 2D-XY FFT 流程中的位置：
+        // 在 fftxyfor（正向 XY 变换）中，当 xprime 为 true 时：
+        // 第一步：执行 planxfor1，完成全系统在 x 方向 的批量 1D FFT。
+        // 第二步：接下来的两个 for 循环调用 planyfor，完成 y 方向 的变换。
+        // 这种“先 x 后 y”的分步处理（1D+1D）通常比直接调用一个 2D FFT 计划效率更高。
         fftw_execute_dft(this->planxfor1, (fftw_complex*)in, (fftw_complex*)out);
+        // 下面的for循环是正向二维（XY）FFT 的第二步，即执行 Y 方向的一维 FFT，
+        // 即在完成了 X 方向的变换后，沿着 X 轴遍历每一个有效点，批量对每个 X 点对应的所有 Y 轴柱数据并行执行正向一维 FFT。
+        /*
+        执行计划 planyfor：
+        planyfor 是在 setupFFT() 中创建的批量处理（batch）一维 FFT 计划。
+        它被设计为一次性对当前 X 坐标下所有的 nplane（Z 层） 上的 Y 方向数据进行 1D FFT 变换。
+
+        分段循环（X 索引）：代码通过两个 for 循环遍历 X 轴索引 i。
+        第一个循环：从 0 遍历到 lixy。
+        第二个循环：从 rixy 遍历到 nx - 1。
+        在这种布局下，lixy 和 rixy 通常定义了当前进程负责的数据在 X 方向上的“有效”边界。
+        中间如果有间隔（即 lixy + 1 < rixy），则说明中间的 X 索引是不需要计算的（常见于并行任务分配或半谱对称性处理）。
+
+        内存定位与偏移：
+        npy = nplane * ny：代表了一个固定 X 索引处所需跳转的“步长”（即跨过多少个 Y*Z 平面的点）。
+        &in[i * npy]：计算输入数据在第 i 个 X 分块上的起始内存地址。
+
+        OpenMP 并行化：
+        循环使用了 #pragma omp parallel for。这意味着在多核 CPU 环境下，
+        不同 X 坐标（不同 i）的批量 Y-FFT 操作将分配给不同的线程并行执行。
+        */
         #pragma omp parallel for
         for (int i = 0; i < this->lixy + 1; ++i)
         {
@@ -377,13 +408,25 @@ void FFT_CPU<double>::fftxyfor(std::complex<double>* in, std::complex<double>* o
             fftw_execute_dft(this->planyfor, (fftw_complex*)&in[i * npy], (fftw_complex*)&out[i * npy]);
         }
     }
+    // 实现了二维正向 FFT 的另一种执行顺序：先做 Y 方向，再做 X 方向
     else
     {
+        // 1. 第一步：执行 Y 方向 1D FFT（并行执行）
+        // 逻辑：遍历 x 轴的所有索引 i（从 0 到 nx-1）。
+        // 批处理：对于每个固定的x，调用planyfor。根据setupFFT 中的定义，
+        // planyfor会对该x下所有 nplane（Z 层）的 y 轴数据同时执行 1D FFT。
         #pragma omp parallel for
         for (int i = 0; i < this->nx; ++i)
         {
             fftw_execute_dft(this->planyfor, (fftw_complex*)&in[i * npy], (fftw_complex*)&out[i * npy]);
         }
+        // 2. 第二步：执行 X 方向 1D FFT（分段批处理）
+        // 逻辑：在 Y 方向变换完成后，再沿着 X 轴进行变换。
+        // 为什么要分段？：
+        // planxfor1：负责 y 坐标在 [0, lixy] 范围内的所有 x 方向 1D FFT。
+        // planxfor2：负责 y 坐标在 [rixy, ny-1] 范围内的所有 x 方向 1D FFT。
+        // 目的：这种分段策略是为了配合并行计算中数据在 y 方向上的分布（即只处理本进程负责或有效的 y 区域），
+        // 中间可能略过了某些不需要计算的y索引片段。
         fftw_execute_dft(this->planxfor1, (fftw_complex*)in, (fftw_complex*)out);
         fftw_execute_dft(this->planxfor2, (fftw_complex*)&in[rixy * nplane], (fftw_complex*)&out[rixy * nplane]);
     }
@@ -551,6 +594,9 @@ void FFT_CPU<double>::fftxybac(std::complex<double>* in,std::complex<double>* ou
 template <>
 void FFT_CPU<double>::fftzfor(std::complex<double>* in, std::complex<double>* out) const
 {
+    // 该函数对输入数组 in 执行 z 方向的一维正向快速傅里叶变换（FFT），结果存入 out。
+    // 使用的是 FFTW 库的 fftw_execute_dft，其中 this->planzfor 是提前用 fftw_plan_many_dft 创建好的批量 1D FFT 计划。
+    // 这个 plan 通常会对所有 stick（柱）上的 z 方向数据批量执行 1D FFT（即一次性对多根 stick 的 z 轴数据做 FFT）。
     fftw_execute_dft(this->planzfor, (fftw_complex*)in, (fftw_complex*)out);
 }
 

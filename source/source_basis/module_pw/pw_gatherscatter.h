@@ -11,22 +11,49 @@ namespace ModulePW
  * @note in and out should be in different places
  * @note in[] will be changed
  */
+/*
+gatherp_scatters()函数把数据从 “按 XY 平面/网格分布（Plane Layout）” 的布局，
+转换为 “按 Stick（固定 x,y 的 Z 柱）分布（Stick Layout）” 的布局，
+用于三维 FFT 中从 XY 方向 FFT 过渡到 Z 方向 FFT 的数据重排/通信阶段。
+
+输入 in：逻辑布局为 (nplane, fftny, fftnx)（更直观地说：当前进程持有一段 Z 切片上的整个 XY 网格数据）
+输出 out：逻辑布局为 (nz, nst)（更直观地说：当前进程最终要得到自己负责的若干根 stick，每根 stick 的 Z 数据连续）
+注意：in 会被覆盖修改；in/out 必须是不同内存区域（函数注释已说明）。
+*/
 template <typename T>
 void PW_Basis::gatherp_scatters(std::complex<T>* in, std::complex<T>* out) const
 {
     //ModuleBase::timer::tick(this->classname, "gatherp_scatters");
     
+    // 单进程，此时不需要 MPI 通信，只需要在本地内存中进行数据重排。
+    // 在这种情况下，nplane（平面厚度）等于总的 nz（Z轴网格数），且本地柱数 nst等于总柱数 nstot。
     if(this->poolnproc == 1) //In this case nst=nstot, nz = nplane, 
     {
 #ifdef _OPENMP
 #pragma omp parallel for
 #endif
+        // j将数据从 “平面布局（Plane Layout）” 重新排列为 “柱状布局（Stick Layout）。
+        /*
+        为什么要执行这一步？
+        在三维FFT流程中：
+        第一步完成了和y方向的FFT,此时数据通常是按物理网格(x,y,z)排列的。
+        下一步要进行z方向的FFT。
+        为了让z方向的FFT运算效率更高（内存访问连续)，需要将每个坐标xy点的Z轴数据从物理网格抽出来，
+        打包成连续的"柱子(Sticks)"。
+        
+        一句话总结：
+        这段代码在单进程下，根据映射表将分散在xy平面网格里的数据，按柱(Stick)为单位重新整齐排列，为接下来的z方向维FFT做准备。
+        */
         for(int is = 0 ; is < this->nst ; ++is)
         {
+            // istot2ixy 是一个映射表。它告诉程序：第 is 根柱子在原始的 xy 平面网格中的位置编号是 ixy。
             int ixy = this->istot2ixy[is];
             //int ixy = (ixy / fftny)*ny + ixy % fftny;
+            // 指向输出数组中第 is 根柱子的起始位置。输出布局是 Stick-major（每一根柱子的 Z 数据是连续的）。
             std::complex<T> *outp = &out[is*nz];
+            // 指向输入数组中第 ixy 个网格点的起始位置。此时输入数据是按 xy 平面布局存储的。
             std::complex<T> *inp = &in[ixy*nz];
+            // 将输入网格中坐标为 ixy 的整条 Z 轴数据，拷贝到输出数组对应的第 is 根柱子中。
             for(int iz = 0 ; iz < this->nz ; ++iz)
             {
                 outp[iz] = inp[iz];
@@ -41,12 +68,49 @@ void PW_Basis::gatherp_scatters(std::complex<T>* in, std::complex<T>* out) const
 #ifdef _OPENMP
 #pragma omp parallel for
 #endif
+/*
+在下面这个 for 循环（以及紧随其后的 MPI 通信之前）结束后，out 数组充当了 MPI 发送缓冲区。
+
+循环结束后，每个进程的 out 数组中的数据存储结构如下：
+
+1. 核心存储逻辑：按“全局 Stick”顺序排列的 Z 轴切片
+out 数组被组织成一个一维连续数组，大小为 nstot * nplane。
+它包含了整个系统所有 Stick（nstot 个）在当前进程负责的 Z 平面（nplane 层）上的数据片段。
+
+2. 内存布局可视化
+假设全系统共有 4 个 Stick (S0, S1, S2, S3)，当前进程负责 Z 轴的某一段（比如 Z=0,1，即 nplane=2）。
+
+out 数组的内存布局是这样的：
+
+|   内存偏移  | 对应的 Stick | 数据内容 (长度 = nplane) |           物理含义             |
+| ----------------------------------------------------------------------------------- |
+| out[0...1] |    Stick 0   |       [S0_z0, S0_z1]    | Stick 0 在本进程 Z 切片上的数据 |
+| out[2...3] |    Stick 1   |       [S1_z0, S1_z1]    | Stick 1 在本进程 Z 切片上的数据 |
+| out[4...5] |    Stick 2   |       [S2_z0, S2_z1]    | Stick 2 在本进程 Z 切片上的数据 |
+| out[6...7] |    Stick 3   |       [S3_z0, S3_z1]    | Stick 3 在本进程 Z 切片上的数据 |
+
+3. 具体特征总结
+
+1.  顺序：
+    数据严格按照 全局 Stick 编号 (istot) 从 0 到 nstot-1 顺序排列。这就是为什么循环是for (int istot = 0; istot < nstot; ++istot)。
+
+2.  完整性（Completeness）：
+    每个进程的 out 数组都包含了所有 Stick 的数据，但不是完整的 Z 轴数据，仅仅是该进程负责的那一部分 Z 层（nplane 厚度）。
+
+*/
+    // 遍历全系统所有的柱（Stick）总量 nstot
 	for (int istot = 0;istot < nstot; ++istot)
 	{
+        // 1. 获取映射：找到第 istot 个柱在物理 xy 平面网格中的索引 ixy
 		int ixy = this->istot2ixy[istot];
         //int ixy = (ixy / fftny)*ny + ixy % fftny;
+        // 2. 定位输出：out 作为发送缓冲区，按柱的顺序连续排放
+        // 每个柱在当前进程中占有的长度为 nplane（即当前进程负责的 Z 层数）
         std::complex<T> *outp = &out[istot*nplane];
+        // 3. 定位输入：in 是当前的物理网格布局（Plane Layout）
+        // 找到对应 ixy 位置的 Z 轴数据起点
         std::complex<T> *inp = &in[ixy*nplane];
+        // 4. 数据拷贝：将该格点在当前进程负责的所有 Z 层数据拷贝到缓冲区
 		for (int iz = 0; iz < nplane; ++iz)
 		{
 			outp[iz] = inp[iz];
@@ -55,6 +119,72 @@ void PW_Basis::gatherp_scatters(std::complex<T>* in, std::complex<T>* out) const
 
     //exchange data
     //(nplane,nstot) to (numz[ip],ns, poolnproc)
+
+    /*
+假设全系统共有 4 个 Stick (S0, S1, S2, S3)，第一个进程负责 Z 轴的某一段（比如 Z=0,1),第二个进程就负责剩下的 Z=2,3，
+前面的for循环结束后第一个进程的out里是[S0_z0, S0_z1,S1_z0, S1_z1,S2_z0, S2_z1,S3_z0, S3_z1]。
+
+在你这个 2 进程 + 4 根 stick + nz=4 的例子里，可以把 函数MPI_Alltoallv() 理解成一次“按 stick 归属 进行的全互换”：
+每个进程手里有“所有 stick 的本地 Z 切片”，然后把属于对方负责的 stick 的那一部分切出来发给对方，
+同时从对方收回属于自己负责的 stick 的另一段 Z 切片，从而让每个进程凑齐自己那几根 stick 的完整 z=0..3。
+
+下面假设 stick 的归属是：
+Rank 0 负责 S0,S1（nst=2）；Rank 1 负责 S2,S3（nst=2）。
+Z 切分是：Rank 0 负责 z=0,1（nplane=2），Rank 1 负责 z=2,3（nplane=2）。
+
+1) for 循环打包后：各进程 out（发送缓冲区）
+你已经给了 Rank 0 的情况（它负责 z=0,1）：
+
+Rank 0 的 out（形状可看成 (nstot=4, nplane=2)，按全局 stick 顺序排列）
+out0 = [S0_z0, S0_z1,  S1_z0, S1_z1,  S2_z0, S2_z1,  S3_z0, S3_z1]
+同理，Rank 1 的 out（它负责 z=2,3）就是：
+out1 = [S0_z2, S0_z3,  S1_z2, S1_z3,  S2_z2, S2_z3,  S3_z2, S3_z3]
+
+2) MPI_Alltoallv 通信时：进程之间“怎么交换”
+Alltoallv 的核心是：Rank i 给 Rank j 发送一段连续数据块（长度由 sendcounts[j] 决定，起点由 sdispls[j] 决定）。
+
+在这个例子里，因为 stick 按归属刚好是连续的两段：
+Rank 0 需要 sticks {S0,S1}（全局 stick 0..1）
+Rank 1 需要 sticks {S2,S3}（全局 stick 2..3）
+
+所以每个进程都会把自己的 out 切成两块：
+
+Rank 0 发送：
+发给 Rank 0（自己）：[S0_z0,S0_z1,S1_z0,S1_z1]
+发给 Rank 1：[S2_z0,S2_z1,S3_z0,S3_z1]
+Rank 1 发送：
+发给 Rank 0：[S0_z2,S0_z3,S1_z2,S1_z3]
+发给 Rank 1（自己）：[S2_z2,S2_z3,S3_z2,S3_z3]
+
+可以看到：
+Rank 0 从 Rank 1 收到的是 “S0,S1 的 z=2,3 切片”（补齐它负责的 sticks）
+Rank 1 从 Rank 0 收到的是 “S2,S3 的 z=0,1 切片”（补齐它负责的 sticks）
+
+3) MPI_Alltoallv 结束后：各进程的 in 变成什么
+MPI_Alltoallv(..., recvbuf=in, ...) 会把收到的数据写进 in。通常（由 rdispls 决定）会按“源进程 rank 顺序”把块放好。
+用最直观的排列表示：
+
+Rank 0 的 in（收到属于 S0,S1 的两段 z 切片）
+来自 Rank 0（自己那段 z=0,1）：[S0_z0,S0_z1,S1_z0,S1_z1]
+来自 Rank 1（对方那段 z=2,3）：[S0_z2,S0_z3,S1_z2,S1_z3]
+
+所以 Rank 0 的 in 变成：
+in0 = [S0_z0,S0_z1,S1_z0,S1_z1,  S0_z2,S0_z3,S1_z2,S1_z3]
+
+Rank 1 的 in（收到属于 S2,S3 的两段 z 切片）
+来自 Rank 0（对方那段 z=0,1）：[S2_z0,S2_z1,S3_z0,S3_z1]
+来自 Rank 1（自己那段 z=2,3）：[S2_z2,S2_z3,S3_z2,S3_z3]
+
+所以 Rank 1 的 in 变成：
+in1 = [S2_z0,S2_z1,S3_z0,S3_z1,  S2_z2,S2_z3,S3_z2,S3_z3]
+*/
+
+// 发送缓冲区：out
+// 给第 p 个进程发送的元素个数：numr[p]
+// 发送给第 p 个进程的数据在 out 中的起始偏移：startr[p]
+// 接收缓冲区：in（注意：这里复用 in 作为接收区，旧的 in 内容不再需要）
+// 从第 p 个进程接收的元素个数：numg[p]
+// 从第 p 个进程接收的数据放在 in 中的起始偏移：startg[p]
 	if(typeid(T) == typeid(double))
 	{
 		MPI_Alltoallv(out, numr, startr, MPI_DOUBLE_COMPLEX, in, numg, startg, MPI_DOUBLE_COMPLEX, this->pool_world);
@@ -65,6 +195,74 @@ void PW_Basis::gatherp_scatters(std::complex<T>* in, std::complex<T>* out) const
 	}
 
     // change (nz,ns) to (numz[ip],ns, poolnproc)
+/*
+下面这段for循环发生在 MPI_Alltoallv 之后，作用是把 in 里“按源进程 ip 分块堆在一起的片段”，
+重新拼成最终的 stick-major 布局 out（每根 stick 拥有完整 nz）。
+
+1) 先明确：MPI_Alltoallv 后 in 的布局是什么
+在 gatherp_scatters 里，MPI_Alltoallv 的目标是让 每个 rank 收到“它负责的 stick”的各段 z 切片。
+因此对 Rank0 来说（它负责 sticks S0,S1）：
+
+MPI_Alltoallv 结束后，Rank0 的 in 通常按“源 rank（ip）分块”堆放：
+来自 ip=0 的块：S0,S1 的 z=0,1
+来自 ip=1 的块：S0,S1 的 z=2,3
+
+所以 Rank0 的 in 可写成：
+in0 = [ S0_z0,S0_z1,  S1_z0,S1_z1,   S0_z2,S0_z3,  S1_z2,S1_z3 ]
+
+这里的关键是：in 里已经只剩“本进程负责的 sticks（nst 根）”，但它们按 ip 分块排列，并不是每根 stick 的 z=0..3 连续。
+
+2) 这段 for 循环在做什么（拼接/解包）
+
+2.1 变量含义（就按代码来对齐）
+
+ip：源进程编号（也可理解为“第 ip 段 z 切片来自哪个进程”）
+is：本进程拥有的 stick 编号（本地 0..nst-1）
+nzip = numz[ip]：从源进程 ip 过来的那段 z 切片长度
+在你的例子里：numz[0]=2、numz[1]=2
+startg[ip]：in 中“来自 ip 的那一大块数据”的起始偏移
+例子里（Rank0）：startg[0]=0、startg[1]=4（因为每块大小 = nst * nzip = 2*2=4）
+startz[ip]：把该段 z 片段写入每根 stick 的 z 起始位置
+例子里：startz[0]=0（写入 z=0 开始）、startz[1]=2（写入 z=2 开始）
+out：目标数组，最终要变成 stick-major：每根 stick 一段连续 nz
+即：out = [S0_z0..z3, S1_z0..z3]（对 Rank0 而言）
+
+2.2 指针推导（这是这段代码的精髓）
+
+inp0 = &in[startg[ip]]：指向 in 中“来自 ip 的块”的开头。
+inp = &inp0[is * nzip]：在“来自 ip 的块”内部，找到第 is 根 stick 的那段切片（长度 nzip）。
+outp0 = &out[startz[ip]]：指向 out 中“z 起点为 startz[ip] 的位置”（注意：这是 stick0 的 z 偏移）。
+outp = &outp0[is * nz]：跳到第 is 根 stick 的那段（每根 stick 间隔 nz），并从 startz[ip] 这个 z 起点开始写。
+最后内层 izip 循环把 nzip 个数从 inp 拷贝到 outp：
+把“来自 ip 的 z 子段”填到每根 stick 的正确 z 位置上。
+
+3) 用你的例子把整个拷贝过程走一遍（以 Rank0 为例）
+设：
+Rank0：nst=2（本地 sticks：S0,S1），nz=4
+numz[0]=2, startz[0]=0
+numz[1]=2, startz[1]=2
+startg[0]=0, startg[1]=4
+in0 = [S0_0,S0_1, S1_0,S1_1,  S0_2,S0_3, S1_2,S1_3]
+
+当 ip=0（拷贝 z=0,1 段）
+inp0 = &in[0]
+is=0：inp = &in[0] 读 [S0_0,S0_1] → outp 写到 S0 的 z=0,1
+is=1：inp = &in[2] 读 [S1_0,S1_1] → 写到 S1 的 z=0,1
+
+当 ip=1（拷贝 z=2,3 段）
+inp0 = &in[4]
+is=0：inp = &in[4] 读 [S0_2,S0_3] → 写到 S0 的 z=2,3
+is=1：inp = &in[6] 读 [S1_2,S1_3] → 写到 S1 的 z=2,3
+
+最终 out（Rank0）变为：
+out0 = [S0_0,S0_1,S0_2,S0_3,  S1_0,S1_1,S1_2,S1_3]
+这正是后续 对每根 stick 做 z 方向 FFT 所需要的连续内存布局。
+
+4) #pragma omp parallel for collapse(2) 的意义
+collapse(2) 会把 (ip,is) 这两层循环展开成一个大循环并行分配，提升并行度。
+这里每个 (ip,is) 写入的是 out 的不同区域（不同 stick、不同 z 段），
+一般不会互相覆盖（前提是 startz[ip] 各段不重叠且覆盖的是不同 z 区间），因此适合并行。
+*/
 #ifdef _OPENMP
 #pragma omp parallel for collapse(2)
 #endif
