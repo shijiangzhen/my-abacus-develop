@@ -32,6 +32,7 @@ void Lattice_Change_Basic::setup_gradient(const UnitCell &ucell, double *lat, do
         stress(2, 2) = stress(2, 2) - stress_aver;
     }
 
+    // 把“无量纲晶格”乘放缩因子转换为“真实长度”的晶格
     lat[0] = ucell.latvec.e11 * ucell.lat0;
     lat[1] = ucell.latvec.e12 * ucell.lat0;
     lat[2] = ucell.latvec.e13 * ucell.lat0;

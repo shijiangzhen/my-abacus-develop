@@ -27,7 +27,7 @@ class UnitCell {
     Lattice lat;
     std::string& Coordinate = lat.Coordinate;
     std::string& latName = lat.latName;
-    double& lat0 = lat.lat0;
+    double& lat0 = lat.lat0;   // 晶胞缩放因子（即 STRU 文件中的 LATTICE_CONSTANT）
     double& lat0_angstrom = lat.lat0_angstrom;
     double& tpiba = lat.tpiba;
     double& tpiba2 = lat.tpiba2;

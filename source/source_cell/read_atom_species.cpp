@@ -145,7 +145,7 @@ bool read_lattice_constant(std::ifstream& ifa,
     ModuleBase::Matrix3& latvec = lat.latvec;
     if( ModuleBase::GlobalFunc::SCAN_LINE_BEGIN(ifa, "LATTICE_CONSTANT") )
     {
-        ModuleBase::GlobalFunc::READ_VALUE(ifa, lat0);
+        ModuleBase::GlobalFunc::READ_VALUE(ifa, lat0); // 读取放缩因子,必须大于0
         if(lat0<=0.0)
         {
             ModuleBase::WARNING_QUIT("read_atom_species","Lattice constant <= 0.0");

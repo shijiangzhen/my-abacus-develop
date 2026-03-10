@@ -4,11 +4,12 @@
 #include "source_base/intarray.h"
 #include "source_base/matrix3.h"
 /// @brief info of lattice
+// 晶格信息结构体
 struct Lattice
 {
     std::string Coordinate = "Direct"; // "Direct" or "Cartesian" or "Cartesian_angstrom"
     std::string latName = "none";      // Lattice name
-    double lat0 = 0.0;                 // Lattice constant(bohr)(a.u.)
+    double lat0 = 0.0;                 // Lattice constant(bohr)(a.u.) // 放缩因子
     double lat0_angstrom = 0.0;        // Lattice constant(angstrom)
     double tpiba = 0.0;                // 2*pi / lat0;
     double tpiba2 = 0.0;               // tpiba ^ 2
